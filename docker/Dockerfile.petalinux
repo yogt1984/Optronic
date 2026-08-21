@@ -1,0 +1,68 @@
+# syntax=docker/dockerfile:1
+# PetaLinux tools image - base for BSP builds and for producing the SDK.
+#
+# The PetaLinux installer is licensed and not redistributable, so it is not
+# part of this repository. Download petalinux-v<VER>-*-installer.run from AMD
+# and hand its directory to the build as a named context; the installer is
+# bind-mounted for one RUN step and never becomes an image layer:
+#
+#   DOCKER_BUILDKIT=1 docker build -f docker/Dockerfile.petalinux -t optronic/plnx:2024.1 \
+#     --build-arg PLNX_VERSION=2024.1 \
+#     --build-arg PLNX_INSTALLER=petalinux-v2024.1-05202009-installer.run \
+#     --build-context plnx=$HOME/Downloads .
+#
+# Host requirements follow UG1144 for the chosen release. Ubuntu 22.04 is on
+# the supported list for 2023.2 and 2024.1.
+
+FROM ubuntu:22.04
+
+ARG PLNX_VERSION=2024.1
+ARG PLNX_INSTALLER=petalinux-v2024.1-05202009-installer.run
+ARG DEBIAN_FRONTEND=noninteractive
+SHELL ["/bin/bash", "-lc"]
+
+RUN dpkg --add-architecture i386 \
+ && apt-get update && apt-get install -y --no-install-recommends \
+      locales sudo ca-certificates curl wget git rsync cpio bc file less lsb-release dnsutils \
+      gawk gcc g++ make net-tools libncurses5-dev zlib1g-dev zlib1g:i386 \
+      libssl-dev flex bison libselinux1 gnupg diffstat chrpath socat xterm \
+      autoconf libtool tar unzip texinfo gcc-multilib build-essential \
+      screen pax gzip python3 python3-pip python3-pexpect python3-git \
+      python3-jinja2 xz-utils debianutils iputils-ping libegl1-mesa libsdl1.2-dev \
+      pylint xvfb libtinfo5 lz4 zstd \
+ && rm -rf /var/lib/apt/lists/* \
+ && locale-gen en_US.UTF-8
+
+ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
+
+# PetaLinux refuses to run as root.
+RUN userdel -r ubuntu 2>/dev/null || true \
+ && useradd -m -u 1000 -s /bin/bash dev \
+ && echo "dev ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/dev \
+ && mkdir -p /opt/petalinux /sstate /downloads /work \
+ && chown dev:dev /opt/petalinux /sstate /downloads /work
+USER dev
+
+RUN --mount=type=bind,from=plnx,source=${PLNX_INSTALLER},target=/tmp/plnx.run \
+    cp /tmp/plnx.run /tmp/plnx-run.sh && chmod +x /tmp/plnx-run.sh \
+ && /tmp/plnx-run.sh -y -d /opt/petalinux --log /tmp/plnx-install.log \
+ && rm -f /tmp/plnx-run.sh
+
+ENV PETALINUX=/opt/petalinux \
+    PLNX_VERSION=${PLNX_VERSION} \
+    SSTATE_DIR=/sstate \
+    DL_DIR=/downloads
+
+VOLUME ["/sstate", "/downloads", "/work"]
+WORKDIR /work
+# PetaLinux wants bash as /bin/sh and its environment in every shell.
+# .bashrc covers interactive shells, .bash_profile covers `bash -lc` (the
+# ENTRYPOINT here and the SHELL in Dockerfile.sdk). No BASH_ENV on purpose:
+# the petalinux-* tools are bash scripts, so BASH_ENV would re-source
+# settings.sh inside every one of them and recurse without end.
+RUN sudo ln -sf bash /bin/sh \
+ && printf '%s\n' '[ -z "${PLNX_ENV_DONE:-}" ] && [ -r "$PETALINUX/settings.sh" ] && { source "$PETALINUX/settings.sh" >/dev/null 2>&1; export PLNX_ENV_DONE=1; }' > ~/.plnxrc \
+ && echo 'source ~/.plnxrc' >> ~/.bashrc \
+ && echo 'source ~/.plnxrc' >> ~/.bash_profile
+ENTRYPOINT ["/bin/bash", "-lc"]
+CMD ["petalinux-util --help | head -3"]

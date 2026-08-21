@@ -1,0 +1,8 @@
+.git
+build/
+build-*/
+.cache/
+models/
+bsp/*
+!bsp/xilinx-zcu104-v2024.1-final.bsp
+optronic-aarch64.tar.gz
