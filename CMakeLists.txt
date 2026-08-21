@@ -16,6 +16,21 @@ endif()
 
 option(OPTRONIC_WERROR "Treat warnings as errors" OFF)
 option(OPTRONIC_BUILD_TESTS "Build unit tests" ON)
+option(OPTRONIC_LTO "Enable interprocedural optimisation for release builds" OFF)
+
+list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
+include(Sanitizers)
+
+if(OPTRONIC_LTO)
+  include(CheckIPOSupported)
+  check_ipo_supported(RESULT _ipo_ok OUTPUT _ipo_msg)
+  if(_ipo_ok)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO ON)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+  else()
+    message(WARNING "LTO requested but not supported: ${_ipo_msg}")
+  endif()
+endif()
 
 find_package(Threads REQUIRED)
 
@@ -28,6 +43,6 @@ target_compile_options(optronic_warnings INTERFACE
 
 add_executable(optronic main.cpp)
 target_include_directories(optronic PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
-target_link_libraries(optronic PRIVATE optronic::warnings Threads::Threads)
+target_link_libraries(optronic PRIVATE optronic::warnings optronic::sanitizers Threads::Threads)
 
 install(TARGETS optronic RUNTIME DESTINATION bin)

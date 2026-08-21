@@ -64,8 +64,8 @@ static void isp_init(void)
     memset(fake_regs, 0, sizeof(fake_regs));
     reg_wr(ISP_ID, ISP_ID_MAGIC);
     reg_wr(ISP_VERSION, 0x00010000);
-    reg_wr(ISP_FRAME_W, g_width);
-    reg_wr(ISP_FRAME_H, g_height);
+    reg_wr(ISP_FRAME_W, (uint32_t)g_width);
+    reg_wr(ISP_FRAME_H, (uint32_t)g_height);
     reg_wr(ISP_GAIN, g_gain & GAIN_MASK);
     reg_wr(ISP_TEMP_MC, 41250);
     reg_wr(ISP_CTRL, CTRL_ENABLE);
@@ -96,7 +96,7 @@ static uint64_t now_us(void)
 {
     struct timeval tv;
     gettimeofday(&tv, NULL);
-    return (uint64_t)tv.tv_sec * 1000000ULL + tv.tv_usec;
+    return (uint64_t)tv.tv_sec * 1000000ULL + (uint64_t)tv.tv_usec;
 }
 
 static Frame* frame_alloc(int w, int h)
@@ -197,7 +197,7 @@ static void fill_pattern(Frame* f, uint32_t seq)
     for (y = 0; y < f->h; y++) {
         uint8_t* row = f->data + y * f->stride;
         for (x = 0; x < f->w; x++) {
-            row[x] = (uint8_t)((x + y + seq) & 0xFF);
+            row[x] = (uint8_t)(((uint32_t)x + (uint32_t)y + seq) & 0xFF);
         }
     }
 }
@@ -235,7 +235,7 @@ void* grab_thread(void* arg)
             /* frame is lost here */
         }
 
-        usleep(period_us);
+        usleep((useconds_t)period_us);
     }
 
     printf("%s grab thread exit\n", g_log_prefix);
@@ -367,7 +367,7 @@ int main(int argc, char** argv)
         if (reload_gain) {
             reload_gain = 0;
             g_gain = (g_gain + 64) & GAIN_MASK;
-            reg_wr(ISP_GAIN, g_gain);
+            reg_wr(ISP_GAIN, (uint32_t)g_gain);
             printf("%s gain set to %d\n", g_log_prefix, g_gain);
         }
 
@@ -395,6 +395,6 @@ int main(int argc, char** argv)
     }
 
     printf("%s done, %u frames in %.1f s\n", g_log_prefix, processed,
-           (now_us() - t_start) / 1e6);
+           (double)(now_us() - t_start) / 1e6);
     return 0;
 }
