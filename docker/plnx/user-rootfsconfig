@@ -1,0 +1,11 @@
+CONFIG_gstreamer1.0
+CONFIG_gstreamer1.0-plugins-base
+CONFIG_gstreamer1.0-plugins-good
+CONFIG_gstreamer1.0-plugins-bad
+CONFIG_gstreamer1.0-libav
+CONFIG_mosquitto
+CONFIG_mosquitto-clients
+CONFIG_nlohmann-json
+CONFIG_gdbserver
+CONFIG_openssh-sftp-server
+CONFIG_libstdc++

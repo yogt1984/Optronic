@@ -1,0 +1,87 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: meta
+        run: echo "tag=ghcr.io/${GITHUB_REPOSITORY,,}/debian:${{ hashFiles('docker/Dockerfile.debian', 'docker/entry.sh') }}" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: build image if missing
+        run: |
+          if docker manifest inspect "${{ steps.meta.outputs.tag }}" >/dev/null 2>&1; then
+            echo "image exists"; exit 0
+          fi
+          docker build -f docker/Dockerfile.debian -t "${{ steps.meta.outputs.tag }}" .
+          docker push "${{ steps.meta.outputs.tag }}"
+
+  lint:
+    needs: image
+    runs-on: ubuntu-24.04
+    container: { image: "${{ needs.image.outputs.tag }}", options: --user 1000 }
+    steps:
+      - uses: actions/checkout@v4
+      - run: git config --global --add safe.directory "$PWD" && STAGES=lint /entry.sh
+
+  host:
+    needs: image
+    runs-on: ubuntu-24.04
+    container: { image: "${{ needs.image.outputs.tag }}", options: --user 1000 --security-opt seccomp=unconfined }
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+        preset: [host-debug, host-asan, host-tsan]
+    env:
+      CC: ${{ matrix.compiler == 'gcc' && 'gcc-13' || 'clang-17' }}
+      CXX: ${{ matrix.compiler == 'gcc' && 'g++-13' || 'clang++-17' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with: { path: /ccache, key: ccache-${{ matrix.compiler }}-${{ matrix.preset }}-${{ github.sha }}, restore-keys: ccache-${{ matrix.compiler }}-${{ matrix.preset }}- }
+      - run: git config --global --add safe.directory "$PWD" && STAGES=host HOST_PRESETS=${{ matrix.preset }} /entry.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: junit-${{ matrix.compiler }}-${{ matrix.preset }}, path: build-*/junit*.xml, if-no-files-found: ignore }
+
+  cross:
+    needs: image
+    runs-on: ubuntu-24.04
+    container: { image: "${{ needs.image.outputs.tag }}", options: --user 1000 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with: { path: /ccache, key: ccache-arm64-${{ github.sha }}, restore-keys: ccache-arm64- }
+      - run: git config --global --add safe.directory "$PWD" && STAGES=cross /entry.sh
+      - uses: actions/upload-artifact@v4
+        with: { name: optronic-aarch64, path: optronic-aarch64.tar.gz }
+
+  qemu:
+    # Runs only where a PetaLinux SDK image is available (self-hosted runner).
+    if: ${{ vars.HAS_PLNX == 'true' }}
+    needs: image
+    runs-on: [self-hosted, plnx]
+    container: { image: "optronic/sdk:2024.1", options: --user 1000 }
+    steps:
+      - uses: actions/checkout@v4
+      - run: STAGES=cross,qemu /entry.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: junit-qemu, path: build/junit/*.xml, if-no-files-found: ignore }

@@ -1,0 +1,71 @@
+# syntax=docker/dockerfile:1
+# Build and test image without vendor tooling.
+#
+# Host toolchain (GCC 13 / Clang 17) for unit tests and sanitizers, plus the
+# Ubuntu aarch64 cross toolchain with multiarch dev packages as a fallback
+# for the PetaLinux SDK. Binaries from this image target a generic aarch64
+# Linux, not the PetaLinux sysroot - see docker/Dockerfile.sdk for that.
+
+FROM ubuntu:24.04
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN true \
+ && sed -i 's|^Types: deb$|Types: deb\nArchitectures: amd64|' /etc/apt/sources.list.d/ubuntu.sources \
+ && printf '%s\n' \
+      'Types: deb' \
+      'URIs: http://ports.ubuntu.com/ubuntu-ports' \
+      'Suites: noble noble-updates noble-security' \
+      'Components: main universe' \
+      'Architectures: arm64' \
+      'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg' \
+      > /etc/apt/sources.list.d/ubuntu-ports.sources
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential g++-13 clang-17 clang-format-17 clang-tidy-17 lld-17 \
+      cmake ninja-build ccache pkg-config git ca-certificates curl python3 \
+      gdb valgrind \
+      libgtest-dev libgmock-dev \
+      libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+      gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
+      gstreamer1.0-plugins-ugly gstreamer1.0-tools gstreamer1.0-libav \
+      libmosquitto-dev mosquitto mosquitto-clients nlohmann-json3-dev \
+      crossbuild-essential-arm64 qemu-user-static debootstrap symlinks \
+ && rm -rf /var/lib/apt/lists/*
+
+# aarch64 sysroot for the fallback cross build. Ubuntu's GStreamer -dev
+# packages are not co-installable across architectures, so the target
+# libraries live in their own tree instead of the host's dpkg database.
+# debootstrap --foreign downloads everything and unpacks the base; the rest is
+# extracted with dpkg-deb. No postinst scripts run, so no emulation is needed.
+RUN debootstrap --arch=arm64 --foreign --variant=minbase \
+      --components=main,universe \
+      --include=libc6,libc6-dev,libstdc++6,libstdc++-13-dev,libgcc-s1,libgstreamer1.0-dev,libgstreamer-plugins-base1.0-dev,libmosquitto-dev,libgtest-dev,libgmock-dev,nlohmann-json3-dev,pkgconf \
+      noble /opt/sysroot-arm64 http://ports.ubuntu.com/ubuntu-ports \
+ && for d in /opt/sysroot-arm64/var/cache/apt/archives/*.deb; do dpkg-deb -x "$d" /opt/sysroot-arm64; done \
+ && cd /opt/sysroot-arm64 && for d in lib lib64 bin sbin; do \
+      if [ -d "$d" ] && [ ! -L "$d" ]; then cp -a "$d"/. "usr/$d"/ 2>/dev/null || true; rm -rf "$d"; ln -s "usr/$d" "$d"; fi; done && cd / \
+ && rm -rf /opt/sysroot-arm64/debootstrap /opt/sysroot-arm64/var/cache/apt \
+ && symlinks -cr /opt/sysroot-arm64 >/dev/null
+
+RUN update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-17 100 \
+ && update-alternatives --install /usr/bin/clang clang /usr/bin/clang-17 100 \
+ && update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-17 100 \
+ && update-alternatives --install /usr/bin/clang-tidy clang-tidy /usr/bin/clang-tidy-17 100
+
+# Unprivileged build user; uid 1000 matches the usual developer uid so
+# bind-mounted sources stay writable.
+RUN userdel -r ubuntu 2>/dev/null || true \
+ && useradd -m -u 1000 -s /bin/bash dev \
+ && mkdir -p /ccache /work && chown dev:dev /ccache /work
+USER dev
+WORKDIR /work
+
+ENV CCACHE_DIR=/ccache \
+    CMAKE_CXX_COMPILER_LAUNCHER=ccache \
+    CMAKE_C_COMPILER_LAUNCHER=ccache \
+    OPTRONIC_IMAGE=debian \
+    OPTRONIC_SYSROOT=/opt/sysroot-arm64
+
+COPY docker/entry.sh /entry.sh
+ENTRYPOINT ["/entry.sh"]

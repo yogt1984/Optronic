@@ -1,0 +1,14 @@
+/include/ "system-conf.dtsi"
+/ {
+	/* Plain memory region exposed through UIO so the HAL's mapping and
+	 * interrupt plumbing can be exercised in QEMU without a PL design. */
+	isp_ctrl: isp_ctrl@a0000000 {
+		compatible = "generic-uio";
+		reg = <0x0 0xa0000000 0x0 0x1000>;
+		interrupt-parent = <&gic>;
+		interrupts = <0 89 4>;
+	};
+	chosen {
+		bootargs = "earlycon console=ttyPS0,115200 clk_ignore_unused root=/dev/ram0 rw uio_pdrv_genirq.of_id=generic-uio";
+	};
+};

@@ -1,0 +1,80 @@
+# syntax=docker/dockerfile:1
+# Application SDK image derived from the PetaLinux tools image.
+#
+# Stage 1 builds a reference BSP project once, adds the libraries the
+# application needs to the target image, and produces the cross SDK plus the
+# QEMU boot artefacts. Stage 2 keeps only the SDK, the QEMU images and the
+# host tooling - a few GB instead of the full BSP tree.
+#
+#   docker build -f docker/Dockerfile.sdk -t optronic/sdk:2024.1 \
+#     --build-arg PLNX_VERSION=2024.1 --build-arg PLNX_BSP=/bsp/xilinx-zcu104-v2024.1-final.bsp .
+#
+# The BSP file is downloaded from AMD (login required) and bind-mounted or
+# copied into the build context under bsp/ (git-ignored).
+
+ARG PLNX_VERSION=2024.1
+FROM optronic/plnx:${PLNX_VERSION} AS bsp
+
+ARG PLNX_BSP=bsp/xilinx-zcu104-v2024.1-final.bsp
+ARG PLNX_MACHINE=zcu104
+SHELL ["/bin/bash", "-lc"]
+WORKDIR /work
+
+COPY --chown=dev:dev ${PLNX_BSP} /tmp/ref.bsp
+COPY --chown=dev:dev docker/plnx/ /work/plnx/
+
+RUN source $PETALINUX/settings.sh \
+ && petalinux-create project -s /tmp/ref.bsp -n ref \
+ && cd ref \
+ && cp /work/plnx/user-rootfsconfig project-spec/meta-user/conf/user-rootfsconfig \
+ && cat /work/plnx/rootfs.cfg >> project-spec/configs/rootfs_config \
+ && cat /work/plnx/petalinuxbsp.conf >> project-spec/meta-user/conf/petalinuxbsp.conf \
+ && cp /work/plnx/system-user.dtsi project-spec/meta-user/recipes-bsp/device-tree/files/system-user.dtsi \
+ && petalinux-config --silentconfig \
+ && petalinux-build \
+ && petalinux-build --sdk \
+ && petalinux-package sysroot -d /opt/sdk \
+ && petalinux-package boot --u-boot --force \
+ && mkdir -p /opt/qemu \
+ && cp images/linux/{Image,rootfs.cpio.gz.u-boot,boot.scr,system.dtb,u-boot.elf,bl31.elf,pmufw.elf,zynqmp_fsbl.elf} /opt/qemu/ 2>/dev/null || true \
+ && cp -r pre-built /opt/qemu/pre-built 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+FROM ubuntu:24.04
+ARG PLNX_VERSION=2024.1
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential g++-13 clang-17 clang-format-17 clang-tidy-17 \
+      cmake ninja-build ccache pkg-config git ca-certificates curl python3 file \
+      openssh-client sshpass \
+      libgtest-dev libgmock-dev \
+      libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+      gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
+      gstreamer1.0-plugins-ugly gstreamer1.0-tools gstreamer1.0-libav \
+      libmosquitto-dev mosquitto mosquitto-clients nlohmann-json3-dev \
+      qemu-system-arm qemu-system-misc \
+ && rm -rf /var/lib/apt/lists/* \
+ && update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-17 100 \
+ && update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-17 100 \
+ && update-alternatives --install /usr/bin/clang-tidy clang-tidy /usr/bin/clang-tidy-17 100
+
+COPY --from=bsp /opt/sdk /opt/sdk
+COPY --from=bsp /opt/qemu /opt/qemu
+COPY --from=bsp /opt/petalinux/${PLNX_VERSION}/tools/xsct/bin/qemu-system-aarch64 /opt/qemu/bin/ 2>/dev/null || true
+
+RUN userdel -r ubuntu 2>/dev/null || true \
+ && useradd -m -u 1000 -s /bin/bash dev \
+ && mkdir -p /ccache /work && chown dev:dev /ccache /work
+USER dev
+WORKDIR /work
+
+ENV CCACHE_DIR=/ccache \
+    CMAKE_CXX_COMPILER_LAUNCHER=ccache \
+    CMAKE_C_COMPILER_LAUNCHER=ccache \
+    OPTRONIC_IMAGE=sdk \
+    OPTRONIC_SDK_VERSION=${PLNX_VERSION} \
+    OPTRONIC_QEMU_DIR=/opt/qemu
+
+COPY docker/entry.sh /entry.sh
+ENTRYPOINT ["/entry.sh"]
