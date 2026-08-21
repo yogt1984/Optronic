@@ -1,0 +1,13 @@
+# build
+build/
+build-*/
+.cache/
+compile_commands.json
+
+# editors
+.vscode/
+.idea/
+*.swp
+
+# downloaded artefacts
+models/*.onnx
