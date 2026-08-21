@@ -1,0 +1,14 @@
+Checks: >
+  bugprone-*,
+  concurrency-*,
+  cppcoreguidelines-owning-memory,
+  cppcoreguidelines-no-malloc,
+  performance-*,
+  modernize-*,
+  -modernize-use-trailing-return-type,
+  -modernize-avoid-c-arrays,
+  readability-braces-around-statements,
+  readability-container-size-empty
+WarningsAsErrors: ''
+HeaderFilterRegex: '(framework|modules|tools)/.*'
+FormatStyle: file

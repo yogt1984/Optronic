@@ -1,0 +1,20 @@
+BasedOnStyle: LLVM
+IndentWidth: 2
+ColumnLimit: 100
+PointerAlignment: Left
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+BreakBeforeBraces: Attach
+IncludeBlocks: Regroup
+IncludeCategories:
+  - Regex: '^<optronic/'
+    Priority: 2
+  - Regex: '^<(gst|mosquitto|nlohmann|gtest)'
+    Priority: 3
+  - Regex: '^<.*\.h>'
+    Priority: 4
+  - Regex: '^<'
+    Priority: 5
+  - Regex: '.*'
+    Priority: 1
+SortIncludes: CaseSensitive
