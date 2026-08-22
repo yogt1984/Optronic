@@ -5,8 +5,6 @@ project(Optronic
   DESCRIPTION "Sensor node application"
   LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 14)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -41,8 +39,29 @@ target_compile_options(optronic_warnings INTERFACE
   -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion
   $<$<BOOL:${OPTRONIC_WERROR}>:-Werror>)
 
+# Language level belongs to the targets, not the directory: only what links
+# optronic::options gets it. C++23 for exactly one reason - std::expected is
+# C++23, not C++20; everything else stays inside the C++20 subset of SPEC-11.
+add_library(optronic_options INTERFACE)
+add_library(optronic::options ALIAS optronic_options)
+target_compile_features(optronic_options INTERFACE cxx_std_23)
+
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 13)
+  message(FATAL_ERROR "GCC ${CMAKE_CXX_COMPILER_VERSION} too old - need >= 13 for <expected>")
+elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 17)
+  message(FATAL_ERROR "Clang ${CMAKE_CXX_COMPILER_VERSION} too old - need >= 17 for <expected>")
+endif()
+
+add_subdirectory(framework)
+
 add_executable(optronic main.cpp)
 target_include_directories(optronic PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
-target_link_libraries(optronic PRIVATE optronic::warnings optronic::sanitizers Threads::Threads)
+target_link_libraries(optronic PRIVATE
+  optronic::options optronic::warnings optronic::sanitizers Threads::Threads)
 
 install(TARGETS optronic RUNTIME DESTINATION bin)
+
+if(OPTRONIC_BUILD_TESTS)
+  enable_testing()
+  add_subdirectory(tests)
+endif()
