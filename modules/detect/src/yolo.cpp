@@ -3,6 +3,7 @@
 #include <atomic>
 #include <fstream>
 #include <mutex>
+#include <opencv2/core.hpp>
 #include <opencv2/dnn.hpp>
 #include <opencv2/imgproc.hpp>
 
@@ -65,6 +66,14 @@ public:
 
     net_.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
     net_.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
+
+    // One thread, deliberately. This runs on a GStreamer streaming thread, and
+    // OpenCV's own pool would compete with the pipeline's threads for the same
+    // cores while making the frame time unpredictable - the opposite of what a
+    // declared budget is for. It is also why ThreadSanitizer can see through
+    // this module at all: an uninstrumented pool inside a library reports
+    // races that are not ours and hides any that are.
+    cv::setNumThreads(1);
 
     model_ = std::make_unique<cv::dnn::DetectionModel>(net_);
     model_->setInputParams(1.0 / 255.0, cv::Size{cfg_.input_size, cfg_.input_size}, cv::Scalar{},
