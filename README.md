@@ -27,8 +27,21 @@ host presets, the aarch64 cross build, and the cross-built suite again under
 QEMU user-mode emulation - 49 test cases on aarch64, on a laptop with no board
 attached.
 
+`tools/test.sh` runs the suite without needing to remember any of that:
+
+```
+tools/test.sh                # all of it, in the container
+tools/test.sh SpscRing       # only tests matching a regex
+tools/test.sh --native       # on this machine instead
+tools/test.sh --preset host-tsan
+```
+
+A host without the GStreamer and mosquitto development files runs 41 of the 57
+and reports the rest as absent rather than failing, which is why the container
+is the reference environment.
+
 There is also a scripted walk-through - `tools/demo.sh warm` once, then
-`tests`, `service` and `qemu` as three separate acts.
+`tests`, `service`, `nuc` and `qemu` as four separate acts.
 
 The binary is the service itself, not a demo harness:
 
