@@ -102,11 +102,15 @@ detect)
   for f in models/yolov4-tiny.weights models/coco.names; do
     [[ -s $HERE/$f ]] || { echo "missing $f - run tools/get_model.sh" >&2; exit 1; }
   done
-  [[ -e /dev/video0 ]] || { echo "no /dev/video0" >&2; exit 1; }
+  # Which /dev/video* a camera gets depends on enumeration order, and a USB
+  # camera claims several nodes of which only some capture. Ask rather than
+  # assume; an external camera wins over the built-in one.
+  cam=${OPTRONIC_CAMERA:-$("$HERE/tools/cameras.sh" --pick)} || exit 1
   gst-inspect-1.0 avdec_h264 >/dev/null 2>&1 ||
     { echo "sudo apt install gstreamer1.0-libav gstreamer1.0-plugins-bad" >&2; exit 1; }
 
   rule "Camera through the detector: boxes drawn inside the frame path"
+  echo "  using $cam ($("$HERE/tools/cameras.sh" | awk -v d="$cam" '$1==d{$1="";print $0}' | xargs))"
   echo "  point the camera at yourself, a chair, a cup - COCO classes."
   echo "  Ctrl-C to stop."
   echo
@@ -114,10 +118,10 @@ detect)
   # --group-add: the device is owned by the host's video group, and the
   # container's user is not in it.
   cid=$(docker run -d --rm --network host --security-opt seccomp=unconfined \
-          --device /dev/video0 --group-add "$(stat -c '%g' /dev/video0)" \
+          --device "$cam" --group-add "$(stat -c '%g' "$cam")" \
           -v "$HERE:/work" --entrypoint bash "$DETECT_IMAGE" -c '
             mosquitto -d -p 1883 2>/dev/null; sleep 1
-            exec /work/build-cv/optronic --camera --width 640 --height 480 \
+            exec /work/build-cv/optronic --camera --device '"$cam"' --width 640 --height 480 \
               --detect --stream --host 127.0.0.1 --port 5600 \
               --broker 127.0.0.1 --node sight-01')
 
