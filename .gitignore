@@ -10,7 +10,11 @@ compile_commands.json
 *.swp
 
 # downloaded artefacts
+# Model weights are fetched by tools/get_model.sh: large, separately
+# licensed, and versioned independently of this code. The small text files
+# beside them (cfg, class names) stay tracked so the fetch is optional.
 models/*.onnx
+models/*.weights
 bsp/
 optronic-aarch64.tar.gz
 

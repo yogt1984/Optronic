@@ -17,10 +17,12 @@ using namespace optronic;
 
 namespace {
 
+// The default model, not whichever one happens to be lying around: checking
+// for a different file than the one create() loads is how a test skips on one
+// machine and fails on another.
 bool model_present() {
   namespace fs = std::filesystem;
-  return fs::exists("models/yolov4-tiny.weights") && fs::exists("models/yolov4-tiny.cfg") &&
-         fs::exists("models/coco.names");
+  return fs::exists(detect::YoloConfig{}.weights) && fs::exists(detect::YoloConfig{}.names);
 }
 
 // A synthetic scene the detector will not find anything in, used to check the
