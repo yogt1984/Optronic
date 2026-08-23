@@ -55,11 +55,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/cache@v4
-        with: { path: /ccache, key: ccache-${{ matrix.compiler }}-${{ matrix.preset }}-${{ github.sha }}, restore-keys: ccache-${{ matrix.compiler }}-${{ matrix.preset }}- }
+        with:
+          path: /ccache
+          key: "ccache-${{ matrix.compiler }}-${{ matrix.preset }}-${{ github.sha }}"
+          restore-keys: "ccache-${{ matrix.compiler }}-${{ matrix.preset }}-"
       - run: git config --global --add safe.directory "$PWD" && STAGES=host HOST_PRESETS=${{ matrix.preset }} /entry.sh
       - uses: actions/upload-artifact@v4
         if: always()
-        with: { name: junit-${{ matrix.compiler }}-${{ matrix.preset }}, path: build-*/junit*.xml, if-no-files-found: ignore }
+        with:
+          name: "junit-${{ matrix.compiler }}-${{ matrix.preset }}"
+          path: build-*/junit*.xml
+          if-no-files-found: ignore
 
   cross:
     needs: image
@@ -68,20 +74,44 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/cache@v4
-        with: { path: /ccache, key: ccache-arm64-${{ github.sha }}, restore-keys: ccache-arm64- }
+        with:
+          path: /ccache
+          key: "ccache-arm64-${{ github.sha }}"
+          restore-keys: ccache-arm64-
       - run: git config --global --add safe.directory "$PWD" && STAGES=cross /entry.sh
       - uses: actions/upload-artifact@v4
-        with: { name: optronic-aarch64, path: optronic-aarch64.tar.gz }
+        with:
+          name: optronic-aarch64
+          path: optronic-aarch64.tar.gz
 
+  # User-mode emulation: the cross-built aarch64 binaries are executed on the
+  # hosted x86 runner. It proves the ARM code is correct - alignment, atomics,
+  # type widths - and nothing about the hardware.
   qemu:
-    # Runs only where a PetaLinux SDK image is available (self-hosted runner).
+    needs: image
+    runs-on: ubuntu-24.04
+    container:
+      image: "${{ needs.image.outputs.tag }}"
+      options: --user 1000
+    steps:
+      - uses: actions/checkout@v4
+      - run: git config --global --add safe.directory "$PWD" && STAGES=cross,qemu /entry.sh
+
+  # The PetaLinux QEMU machine boots the real target image, so it needs the
+  # licensed SDK and a runner that keeps it. Skipped everywhere else.
+  qemu-petalinux:
     if: ${{ vars.HAS_PLNX == 'true' }}
     needs: image
     runs-on: [self-hosted, plnx]
-    container: { image: "optronic/sdk:2024.1", options: --user 1000 }
+    container:
+      image: "optronic/sdk:2024.1"
+      options: --user 1000
     steps:
       - uses: actions/checkout@v4
       - run: STAGES=cross,qemu /entry.sh
       - uses: actions/upload-artifact@v4
         if: always()
-        with: { name: junit-qemu, path: build/junit/*.xml, if-no-files-found: ignore }
+        with:
+          name: junit-qemu
+          path: build/junit/*.xml
+          if-no-files-found: ignore
