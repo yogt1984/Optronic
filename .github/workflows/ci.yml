@@ -6,6 +6,11 @@ on:
     tags: ['v*']
   pull_request:
 
+# The image job publishes to GHCR; the default token is read-only.
+permissions:
+  contents: read
+  packages: write
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
