@@ -29,8 +29,12 @@ endif()
 include(GoogleTest)
 
 add_executable(test_core core/test_error.cpp)
+# optronic::sanitizers has to be named here as well: the libraries link it
+# PRIVATE, which for a static library propagates the link options but not the
+# compile options - so without this the test code is linked against the
+# sanitizer runtime while not being instrumented by it.
 target_link_libraries(test_core PRIVATE
-  optronic::core optronic::warnings GTest::gtest_main)
+  optronic::core optronic::warnings optronic::sanitizers GTest::gtest_main)
 # PRE_TEST everywhere: the default POST_BUILD mode runs the test binary during
 # the build to enumerate cases, which cannot work when cross-compiling for
 # aarch64 on an x86 host - it breaks the cross stage outright. Deferring the
@@ -54,11 +58,31 @@ if(TARGET optronic::video AND NOT OPTRONIC_SANITIZER MATCHES "thread")
     video/test_factory.cpp
     video/test_pipeline.cpp)
   target_link_libraries(test_video PRIVATE
-    optronic::video optronic::warnings GTest::gtest_main)
+    optronic::video optronic::warnings optronic::sanitizers GTest::gtest_main)
   gtest_discover_tests(test_video DISCOVERY_MODE PRE_TEST)
 endif()
 
 add_executable(test_app app/test_app.cpp)
 target_link_libraries(test_app PRIVATE
-  optronic::app optronic::warnings GTest::gtest_main)
+  optronic::app optronic::warnings optronic::sanitizers GTest::gtest_main)
 gtest_discover_tests(test_app DISCOVERY_MODE PRE_TEST)
+
+add_executable(test_log log/test_ring.cpp log/test_logger.cpp)
+target_link_libraries(test_log PRIVATE
+  optronic::log optronic::warnings optronic::sanitizers GTest::gtest_main)
+gtest_discover_tests(test_log DISCOVERY_MODE PRE_TEST)
+
+# ctest runs each discovered case in its own process, which hides anything that
+# only goes wrong when objects are created and destroyed in sequence - a stale
+# per-thread cache pointing into a freed logger, for one. This entry runs the
+# whole binary once, in a single process, on purpose.
+add_test(NAME log_single_process COMMAND test_log)
+
+# Same exclusion as the module itself, and for the same reason: the fences in
+# register.hpp are instantiated here too. See framework/CMakeLists.txt.
+if(NOT OPTRONIC_SANITIZER MATCHES "thread")
+  add_executable(test_hal hal/test_hal.cpp)
+  target_link_libraries(test_hal PRIVATE
+    optronic::hal optronic::warnings optronic::sanitizers GTest::gtest_main)
+  gtest_discover_tests(test_hal DISCOVERY_MODE PRE_TEST)
+endif()
