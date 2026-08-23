@@ -42,6 +42,10 @@ jobs:
     runs-on: ubuntu-24.04
     container:
       image: "${{ needs.image.outputs.tag }}"
+      # The image declares USER dev, and the runner writes its state into the
+      # workspace as whatever the container runs as; anything but root fails
+      # in actions/checkout before a build step is reached.
+      options: --user root
     steps:
       - uses: actions/checkout@v4
       - run: git config --global --add safe.directory "$PWD" && STAGES=lint /entry.sh
@@ -53,7 +57,7 @@ jobs:
       image: "${{ needs.image.outputs.tag }}"
       # ThreadSanitizer needs setarch -R, which needs the personality syscall
       # that the default seccomp profile blocks.
-      options: --security-opt seccomp=unconfined
+      options: --user root --security-opt seccomp=unconfined
     strategy:
       fail-fast: false
       matrix:
@@ -82,6 +86,10 @@ jobs:
     runs-on: ubuntu-24.04
     container:
       image: "${{ needs.image.outputs.tag }}"
+      # The image declares USER dev, and the runner writes its state into the
+      # workspace as whatever the container runs as; anything but root fails
+      # in actions/checkout before a build step is reached.
+      options: --user root
     steps:
       - uses: actions/checkout@v4
       - uses: actions/cache@v4
@@ -103,7 +111,7 @@ jobs:
     runs-on: ubuntu-24.04
     container:
       image: "${{ needs.image.outputs.tag }}"
-      options: --security-opt seccomp=unconfined
+      options: --user root --security-opt seccomp=unconfined
     steps:
       - uses: actions/checkout@v4
       - run: git config --global --add safe.directory "$PWD" && STAGES=cross,qemu /entry.sh
@@ -116,6 +124,7 @@ jobs:
     runs-on: [self-hosted, plnx]
     container:
       image: "optronic/sdk:2024.1"
+      options: --user root
     steps:
       - uses: actions/checkout@v4
       - run: STAGES=cross,qemu /entry.sh
