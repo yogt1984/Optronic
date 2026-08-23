@@ -1,5 +1,7 @@
 # Optronic
 
+[![ci](https://github.com/yogt1984/Optronic/actions/workflows/ci.yml/badge.svg)](https://github.com/yogt1984/Optronic/actions/workflows/ci.yml)
+
 A small Linux service that models the software of an electro-optical sensor node — the kind of unit that sits in a vehicle sight or a 360° situational-awareness system: detectors in, processed and encoded video out, a control link, health reporting, telemetry. Target class: Xilinx Zynq UltraScale+ MPSoC on a System-on-Module; everything is also buildable and testable on a PC.
 
 ## Why this repository exists
@@ -197,6 +199,15 @@ The repository starts from a deliberately legacy baseline and moves toward the t
 `git diff --stat v0-legacy..HEAD` is 59 files, +4373/-461.
 
 C++23 rather than C++20 for exactly one reason: `std::expected` is C++23. The rest of the code stays inside the C++20 subset of `docs/11_CODING_GUIDELINES.md`, and the language level is a property of one CMake target, not a global flag.
+
+The build checks for `<expected>` by compiling a two-line probe rather than by
+comparing a compiler version, because the version would have lied: libstdc++ 13
+gates the header on `__cpp_concepts >= 202002L`, and Clang 17 and 18 both report
+`201907L` since they do not implement P2113. Clang therefore cannot see
+`std::expected` with libstdc++ at any currently packaged version - it works
+against libc++, which then needs its own GoogleTest. That is why the CI matrix
+is GCC only, and why a wrong toolchain now gets one sentence instead of a
+template backtrace.
 
 ## What I would do next
 

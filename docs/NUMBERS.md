@@ -96,6 +96,7 @@ unit.
 | TSan, 39 tests (framework, telemetry) | 0 findings |
 | TSan, video tests | excluded — see below |
 | clang-format, clang-tidy, dependency rules | clean |
+| GitHub Actions: image, lint, host x3, cross, qemu | all green |
 | aarch64 cross build | `ELF 64-bit LSB pie executable, ARM aarch64` |
 | aarch64 under qemu-user | 49 cases, 6/6 binaries |
 
@@ -112,6 +113,21 @@ addresses and high-entropy ASLR collides with it. The build disables ASLR for
 the test binaries, and in a container the run needs
 `--security-opt seccomp=unconfined` because the default seccomp profile blocks
 the `personality` syscall.
+
+## Toolchains
+
+| Toolchain | `<expected>` | Status |
+|---|---|---|
+| GCC 13 + libstdc++ 13 | yes | the supported build |
+| Clang 17/18 + libstdc++ 13 | **no** | rejected at configure time |
+| Clang 17 + libc++ 17 | yes | works, needs its own GoogleTest |
+
+libstdc++ 13 gates `<expected>` on `__cpp_concepts >= 202002L`. Clang 17 and 18
+report `201907L`, because neither implements P2113, so the header hides itself
+and the failure appears as "no template named expected in namespace std" far
+from its cause. The configure step compiles a two-line probe and reports this
+in one sentence rather than trusting a version number - which would have said
+Clang 17 was fine.
 
 ## Reproducing
 
