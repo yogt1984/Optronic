@@ -30,6 +30,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
       gstreamer1.0-plugins-ugly gstreamer1.0-tools gstreamer1.0-libav \
       libmosquitto-dev mosquitto mosquitto-clients nlohmann-json3-dev \
+      libopencv-dev libopencv-dnn-dev v4l-utils \
       crossbuild-essential-arm64 qemu-user-static debootstrap symlinks \
  && rm -rf /var/lib/apt/lists/*
 

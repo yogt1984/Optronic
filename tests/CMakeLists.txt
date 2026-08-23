@@ -94,3 +94,13 @@ add_executable(test_sensor sensor/test_nuc.cpp)
 target_link_libraries(test_sensor PRIVATE
   optronic::sensor optronic::warnings optronic::sanitizers GTest::gtest_main)
 gtest_discover_tests(test_sensor DISCOVERY_MODE PRE_TEST)
+
+if(TARGET optronic::detect)
+  add_executable(test_detect detect/test_yolo.cpp)
+  target_link_libraries(test_detect PRIVATE
+    optronic::detect optronic::warnings optronic::sanitizers GTest::gtest_main)
+  # The detector reads its model and reference scene by relative path, so the
+  # tests run from the source tree rather than the build directory.
+  gtest_discover_tests(test_detect DISCOVERY_MODE PRE_TEST
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+endif()

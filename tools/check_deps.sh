@@ -12,6 +12,7 @@ check() {  # pattern, allowed-dir, description
 }
 check '#include[[:space:]]*<gst/'          'modules/video'     'GStreamer headers only in modules/video'
 check '#include[[:space:]]*<mosquitto'     'modules/telemetry' 'mosquitto headers only in modules/telemetry'
+check '#include[[:space:]]*<opencv2/'      'modules/detect'    'OpenCV headers only in modules/detect'
 check '\bvolatile\b'                       'framework/hal'     'volatile only in framework/hal'
 [[ $rc -eq 0 ]] && echo "dependency rules: ok"
 exit $rc

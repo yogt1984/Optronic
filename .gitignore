@@ -17,3 +17,6 @@ optronic-aarch64.tar.gz
 # demo scratch
 .gst-registry-*.bin
 build-container-*/
+
+# test fixture is regenerable, see tests/detect/README.md
+tests/detect/scene.gray
