@@ -61,7 +61,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        compiler: [gcc, clang]
+        # Clang is absent on purpose, not by oversight: libstdc++ 13 gates
+        # <expected> on __cpp_concepts >= 202002L and Clang reports 201907L,
+        # so std::expected is invisible to it. Clang works with -stdlib=libc++,
+        # which needs a GoogleTest built the same way; until that is set up the
+        # matrix would only be red. The configure step now detects this and
+        # says so instead of failing in a template backtrace.
+        compiler: [gcc]
         preset: [host-debug, host-asan, host-tsan]
     env:
       CC: ${{ matrix.compiler == 'gcc' && 'gcc-13' || 'clang-17' }}

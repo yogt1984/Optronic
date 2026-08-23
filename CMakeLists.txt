@@ -46,10 +46,32 @@ add_library(optronic_options INTERFACE)
 add_library(optronic::options ALIAS optronic_options)
 target_compile_features(optronic_options INTERFACE cxx_std_23)
 
-if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 13)
-  message(FATAL_ERROR "GCC ${CMAKE_CXX_COMPILER_VERSION} too old - need >= 13 for <expected>")
-elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 17)
-  message(FATAL_ERROR "Clang ${CMAKE_CXX_COMPILER_VERSION} too old - need >= 17 for <expected>")
+# Feature detection rather than a version number. A version check would have
+# claimed Clang 17 was fine: it is not, and not because of the compiler.
+# libstdc++ 13 guards <expected> on __cpp_concepts >= 202002L, and Clang 17 and
+# 18 both report 201907L because they do not implement P2113 - so the header
+# hides itself and the failure surfaces as "no template named expected in
+# namespace std", hundreds of lines from the cause. Clang works against libc++
+# (-stdlib=libc++), which then also needs its own GoogleTest.
+include(CheckCXXSourceCompiles)
+# CMAKE_CXX_STANDARD, not CMAKE_REQUIRED_FLAGS: try_compile appends its own
+# -std after anything in the flags, and the last one wins.
+set(CMAKE_CXX_STANDARD 23)
+check_cxx_source_compiles([[
+  #include <expected>
+  #include <format>
+  int main() { std::expected<int, int> e{1}; return *e - 1; }
+]] OPTRONIC_HAS_EXPECTED)
+unset(CMAKE_CXX_STANDARD)
+
+if(NOT OPTRONIC_HAS_EXPECTED)
+  message(FATAL_ERROR
+    "This toolchain cannot compile <expected>.\n"
+    "  compiler: ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}\n"
+    "Known good: GCC >= 13 with libstdc++, or Clang with -stdlib=libc++.\n"
+    "Clang with libstdc++ 13 does not work at any Clang version currently "
+    "packaged: libstdc++ gates <expected> on __cpp_concepts >= 202002L and "
+    "Clang reports 201907L.")
 endif()
 
 add_subdirectory(framework)
