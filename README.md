@@ -89,6 +89,23 @@ optronic/sight-01/health  {"v":1,"state":"OFFLINE"}
 The last line is the retained last will, so a monitor that connects afterwards
 still learns the unit is gone.
 
+With a camera and `--detect`, the frames go through a detection stage on their
+way out:
+
+```
+$ tools/cameras.sh --probe          # which /dev/video* actually delivers frames
+$ tools/demo.sh detect              # camera -> YOLO -> boxes -> RTP -> window
+INFO  detect  YOLOv4-tiny loaded
+INFO  detect  frame seq=30 objects=2 infer_ms=112
+```
+
+That stage is a `Processor`: it sees a `FrameView` and a `WritableFrame` and no
+GStreamer type at all. Detection runs on the luma plane directly - an NV12 Y
+plane is already a valid greyscale image - and only on every third frame,
+because 110-170 ms of inference against a 33 ms frame period is the sort of
+budget problem the design exists to make visible rather than hide. On the
+target this is where a DPU would sit.
+
 `--nuc N` runs the non-uniformity correction of `docs/04_HAL_REGISTER_MAP.md`
 §3.1 - the one procedure a thermal channel has and a visual camera does not:
 
@@ -118,6 +135,8 @@ The specifications in `docs/` describe the whole system. The code implements par
 | `modules/telemetry` — MQTT over libmosquitto, last will, backoff | built |
 | the service: BIT, sensor, video, telemetry and logging under one lifecycle | built |
 | `qemu` stage: the aarch64 binaries run under user-mode emulation | built |
+| `modules/detect` — YOLOv4-tiny over the frame path, boxes drawn in place | built |
+| camera input: v4l2 source, device enumeration, format conversion | built |
 | `modules/sensor` — the NUC shutter sequence, its timeouts and recovery | built |
 | `framework/config · ipc · health · time` | specified, not implemented |
 | `tools/nodectl`, PetaLinux QEMU target tests | specified, not implemented |
@@ -181,6 +200,7 @@ modules/
 modules/
   telemetry/ MQTT publisher, last will, backoff        built
   sensor/    NUC shutter sequence, timeouts, recovery   built
+  detect/    YOLOv4-tiny detection stage (OpenCV)        built
 tests/       core, app, log, hal, video, telemetry,
              sensor - 57 host cases, all also on aarch64  built
 tools/       check_deps.sh, format.sh                    built
@@ -243,7 +263,7 @@ template backtrace.
 
 1. `framework/health` — the INIT/OK/DEGRADED/FAULT machine of `docs/06`. The NUC already emits the events it would consume; today they go to the log and to MQTT, but nothing owns the state.
 2. The PetaLinux QEMU machine, which boots the actual target image instead of emulating only the instruction set. The image builds; wiring it into the `qemu` stage is the remaining step, and until then the user-mode run is the honest half of the check.
-3. The t0/t1/t2 latency marks and the rolling window, which turn the interval numbers above into a real glass-to-glass budget.
+3. The t0/t1/t2 latency marks and the rolling window, which turn the interval numbers above into a real glass-to-glass budget - the detector makes this concrete, since inference is 110-170 ms against a 33 ms frame period.
 4. A `GstBufferPool` behind `FrameSource`, so a processor can write output frames without allocating in the frame path. Today the passthrough refs the input buffer instead.
 5. `framework/config` — the JSON store and schema, replacing the command-line flags the service currently takes.
 
