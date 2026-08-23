@@ -24,8 +24,8 @@ docker run --rm --security-opt seccomp=unconfined -v "$PWD:/work" -v optronic-cc
 
 which executes lint (clang-format, clang-tidy, dependency rules), the three
 host presets, the aarch64 cross build, and the cross-built suite again under
-QEMU user-mode emulation - 49 test cases on aarch64, on a laptop with no board
-attached.
+QEMU user-mode emulation - all 57 test cases on aarch64, on a laptop with no
+board attached.
 
 `tools/test.sh` runs the suite without needing to remember any of that:
 
@@ -89,6 +89,20 @@ optronic/sight-01/health  {"v":1,"state":"OFFLINE"}
 The last line is the retained last will, so a monitor that connects afterwards
 still learns the unit is gone.
 
+`--nuc N` runs the non-uniformity correction of `docs/04_HAL_REGISTER_MAP.md`
+§3.1 - the one procedure a thermal channel has and a visual camera does not:
+
+```
+WARN  sensor  NUC started - channel DEGRADED, shutter closing
+INFO  sensor  NUC done - channel OK ms=200 mean_offset=0
+```
+
+200 ms against a 600 ms budget, and both ends go out on the MQTT event topic at
+QoS 1 rather than only in the 1 Hz sample - an event shorter than the sample
+period is invisible to sampling. Every failure path leaves the shutter open: a
+failed NUC that leaves the unit blind is worse than an uncorrected image, and
+the jammed-shutter and never-finishing-accumulation cases are both tested.
+
 The specifications in `docs/` describe the whole system. The code implements part of it, and this table is the honest split:
 
 | Area | State |
@@ -104,9 +118,9 @@ The specifications in `docs/` describe the whole system. The code implements par
 | `modules/telemetry` — MQTT over libmosquitto, last will, backoff | built |
 | the service: BIT, sensor, video, telemetry and logging under one lifecycle | built |
 | `qemu` stage: the aarch64 binaries run under user-mode emulation | built |
+| `modules/sensor` — the NUC shutter sequence, its timeouts and recovery | built |
 | `framework/config · ipc · health · time` | specified, not implemented |
-| `modules/sensor` — the NUC shutter sequence with its timeouts | built |
-| `tools/nodectl`, QEMU target tests | specified, not implemented |
+| `tools/nodectl`, PetaLinux QEMU target tests | specified, not implemented |
 
 Twenty-two tests, all green, including the video pipeline running end to end against `videotestsrc`. Eleven of them need the GStreamer development files; a host without them configures, builds and tests everything else and reports the video module as skipped, which is why the container is the reference environment. Clean under ASan/UBSan with leak detection on. ThreadSanitizer covers the framework; the video module is excluded from it deliberately — see `tests/CMakeLists.txt` for why.
 
@@ -117,6 +131,8 @@ The legacy baseline is gone: `main.cpp` is composition now, and the `volatile` r
 | Role description | Where |
 |---|---|
 | Framework and cross-cutting functions | `framework/` — lifecycle, error model, logging and hardware abstraction built; configuration, control protocol, health/BIT and time specified |
+| MQTT | `modules/telemetry` — retained last will, backoff reconnect, and publish failures that never move the health state |
+| Embedded work packages | `modules/sensor` — the NUC shutter sequence of `docs/04 §3.1`, written and tested against a host fake before any hardware exists |
 | General software work *outside* GStreamer | everything except `modules/video`; GStreamer headers are confined to that one module and `tools/check_deps.sh` fails the build if that is violated |
 | GStreamer, self-taught | `modules/video` and `docs/19_GSTREAMER_INTERFACES.md` |
 | Xilinx SoC and System-on-Module integration | `framework/hal` — typed registers, the ISP map of `docs/04`, a host fake with real side effects, and the UIO backend; PetaLinux-SDK cross build in Docker |
@@ -201,16 +217,16 @@ The repository starts from a deliberately legacy baseline and moves toward the t
 |---|---|---|
 | Build | flat Makefile | CMake targets, presets, aarch64 toolchain file |
 | Standard | C++14 | C++23 (`expected`, `jthread`, concepts) |
-| Structure | one 400-line `main.cpp` | 322 lines of composition over five libraries |
+| Structure | one 400-line `main.cpp` | 512 lines of composition over seven libraries |
 | Memory | raw `new`/`delete`, `volatile` register pointer | RAII throughout; `volatile` confined to the UIO backend |
 | Registers | `uint32_t*` and offsets by hand | typed registers; writing a read-only one will not compile |
 | Errors | return codes and `printf` | `expected<T, Error>` with the SPEC-06 code space |
 | Logging | `printf` from the frame path | fixed 256-byte records, lock-free ring, sink thread, 0 allocations |
 | Shutdown | none | ordered, reverse, rollback on failure, 686 ms on SIGTERM |
-| Tests | none | 45 host tests, clean under ASan/UBSan and TSan |
-| Reproducibility | works on my machine | one container, laptop and CI identical |
+| Tests | none | 57, all of them also on aarch64; clean under ASan/UBSan and TSan |
+| Reproducibility | works on my machine | one container, laptop and CI identical, CI green |
 
-`git diff --stat v0-legacy..HEAD` is 59 files, +4373/-461.
+`git diff --stat v0-legacy..HEAD` is 69 files, +5810/-449, over 22 commits.
 
 C++23 rather than C++20 for exactly one reason: `std::expected` is C++23. The rest of the code stays inside the C++20 subset of `docs/11_CODING_GUIDELINES.md`, and the language level is a property of one CMake target, not a global flag.
 

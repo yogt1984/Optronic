@@ -17,7 +17,7 @@ Ubuntu 24.04, GCC 13.3, GStreamer 1.24.2
 | Clean build, 6 jobs | 10 s | `cmake --build --preset host-debug -j6` |
 | Test suite, 57 tests | 2 s | `ctest --preset host-debug`; the video and telemetry cases need the GStreamer and mosquitto development files and are skipped without them |
 | Binary size | 39 KB debug, 44 KB release | `optronic`, dynamically linked, not stripped |
-| C++ in tree | 3802 lines | `git ls-files '*.cpp' '*.hpp' \| xargs wc -l` |
+| C++ in tree | 4186 lines | `git ls-files '*.cpp' '*.hpp' \| xargs wc -l` |
 
 ## Video pipeline
 
