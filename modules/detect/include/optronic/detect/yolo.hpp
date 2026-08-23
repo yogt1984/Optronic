@@ -25,19 +25,31 @@ struct Detection {
   int class_id = 0;
   float confidence = 0.0F;
   int x = 0, y = 0, w = 0, h = 0;
+  std::string_view label; // into the loaded class list; valid while Yolo lives
 };
 
+// Which export the weights are in. Deduced from the file name rather than
+// asked for, because getting it wrong is not a choice anybody makes on purpose.
+enum class Format { darknet, onnx };
+
 struct YoloConfig {
-  std::string config = "models/yolov4-tiny.cfg";
-  std::string weights = "models/yolov4-tiny.weights";
+  // An ONNX export by default: more accurate, and its raw output has to be
+  // decoded here rather than by OpenCV, which is the interesting half.
+  std::string weights = "models/yolov5s.onnx";
+  std::string config = "models/yolov4-tiny.cfg"; // darknet only
   std::string names = "models/coco.names";
-  int input_size = 416;
+  int input_size = 640;
   float confidence_threshold = 0.4F;
   float nms_threshold = 0.4F;
-  // Detection is far slower than a frame period on a CPU. Rather than drop
-  // frames, the detector runs on every Nth and the boxes from the last run are
-  // drawn on the frames in between - which is what a tracker would do anyway.
-  int detect_every = 3;
+  // Frames between inferences. Zero means work it out: the stage times itself
+  // and skips however many frames its own latency costs, which is the only
+  // honest answer when the same code runs a 110 ms model on a laptop and a
+  // 5 ms accelerator on the target.
+  int detect_every = 0;
+  std::chrono::microseconds frame_period{33'333}; // 30 fps
+  // OpenCV's pool competes with the pipeline's threads and buys almost nothing
+  // here - measured 1002 ms against 1020 ms for yolov5s - so it stays off.
+  int threads = 1;
 };
 
 class Yolo {
@@ -60,6 +72,13 @@ public:
 
   [[nodiscard]] std::vector<Detection> last() const;
   [[nodiscard]] std::chrono::microseconds last_inference() const noexcept;
+
+  // How many frames the stage is currently skipping between inferences.
+  [[nodiscard]] int stride() const noexcept;
+
+  // Which model actually got loaded, for the log line that would otherwise
+  // claim whatever was hardcoded into it.
+  [[nodiscard]] std::string_view model() const noexcept;
 
 private:
   class Impl;

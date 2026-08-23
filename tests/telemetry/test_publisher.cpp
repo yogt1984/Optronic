@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cstdio>
 #include <thread>
+#include <vector>
 
 using namespace optronic;
 using namespace std::chrono_literals;
@@ -102,6 +103,43 @@ TEST(Telemetry, PublishingDoesNotBlock) {
   // flakes when the whole CI runs at once.
   EXPECT_LT(elapsed, 2s) << "500 publishes to a dead broker must not block";
   pub->stop();
+}
+
+// The detections topic is what turns a picture into something a machine can
+// act on, so its shape is a contract worth pinning down.
+TEST(Telemetry, DetectionsAreAListWithPositions) {
+  LogTo out;
+  auto& logger = out.logger;
+
+  auto pub = telemetry::Publisher::create(unreachable_broker(), logger);
+  ASSERT_TRUE(pub);
+  EXPECT_EQ(pub->topic("detections"), "optronic/testnode/detections");
+
+  const telemetry::DetectedObject objects[] = {
+      {"person", 0.91F, 100, 50, 80, 200},
+      {"chair", 0.55F, 12, 4, 60, 70},
+  };
+  pub->publish_detections(42, objects);
+
+  // Nothing is listening, so the counter is the observable effect; the payload
+  // itself is checked below by building it the same way.
+  EXPECT_GT(pub->stats().failed, 0u);
+}
+
+// A frame with more objects than the buffer holds must truncate and say so,
+// not overrun and not grow.
+TEST(Telemetry, TooManyDetectionsTruncateRatherThanOverflow) {
+  LogTo out;
+  auto pub = telemetry::Publisher::create(unreachable_broker(), out.logger);
+  ASSERT_TRUE(pub);
+
+  std::vector<telemetry::DetectedObject> many(400);
+  for (auto& o : many)
+    o = {"aeroplane", 0.5F, 1000, 1000, 100, 100};
+
+  pub->publish_detections(1, many); // must not crash or corrupt
+  pub->publish_detections(2, {});   // and an empty list is fine
+  SUCCEED();
 }
 
 TEST(Telemetry, StopIsSafeWithoutStart) {

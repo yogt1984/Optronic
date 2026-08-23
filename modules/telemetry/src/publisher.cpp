@@ -228,6 +228,45 @@ void Publisher::publish_latency(const LatencySample& s) noexcept {
     impl_->publish("latency", {buf.data(), static_cast<std::size_t>(n)}, kQosPeriodic, false);
 }
 
+// Built by hand into a fixed buffer for the same reason as the others: this is
+// called from the frame path, where an allocation per frame is the thing the
+// whole design avoids. A frame with more objects than fit is truncated and
+// says so, rather than growing without bound.
+void Publisher::publish_detections(std::uint64_t seq,
+                                   std::span<const DetectedObject> objects) noexcept {
+  std::array<char, 2048> buf{};
+  int n = std::snprintf(buf.data(), buf.size(), R"({"v":1,"seq":%llu,"count":%zu,"objects":[)",
+                        static_cast<unsigned long long>(seq), objects.size());
+  if (n <= 0)
+    return;
+
+  std::size_t written = 0;
+  for (const DetectedObject& o : objects) {
+    // Leave room for the closing brackets whatever happens.
+    const int room = static_cast<int>(buf.size()) - n - 16;
+    if (room <= 0)
+      break;
+    const int k =
+        std::snprintf(buf.data() + n, static_cast<std::size_t>(room),
+                      R"(%s{"label":"%.*s","conf":%.2f,"x":%d,"y":%d,"w":%d,"h":%d})",
+                      written ? "," : "", static_cast<int>(o.label.size()), o.label.data(),
+                      static_cast<double>(o.confidence), o.x, o.y, o.w, o.h);
+    if (k <= 0 || k >= room)
+      break;
+    n += k;
+    ++written;
+  }
+
+  const int tail =
+      std::snprintf(buf.data() + n, buf.size() - static_cast<std::size_t>(n),
+                    R"(],"truncated":%s})", written < objects.size() ? "true" : "false");
+  if (tail <= 0)
+    return;
+  n += tail;
+
+  impl_->publish("detections", {buf.data(), static_cast<std::size_t>(n)}, kQosPeriodic, false);
+}
+
 void Publisher::publish_event(std::string_view id, std::uint16_t code,
                               std::string_view text) noexcept {
   std::array<char, 256> buf{};
