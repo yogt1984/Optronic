@@ -12,6 +12,10 @@
 #   tools/demo.sh service   the service, MQTT, and a broker outage (~25 s)
 #   tools/demo.sh nuc       the NUC shutter sequence, live         (~10 s)
 #   tools/demo.sh qemu      the same binary on aarch64             (~15 s)
+#   tools/demo.sh live      runs until Ctrl-C: video window + live MQTT
+#
+# `live` needs a decoder on this machine:
+#   sudo apt install gstreamer1.0-libav gstreamer1.0-plugins-bad
 #
 # Each act stops at the end. Run them one at a time and talk in between.
 set -euo pipefail
@@ -91,7 +95,49 @@ qemu)
        sleep 1; kill $sub 2>/dev/null || true; pkill mosquitto || true'
   ;;
 
+live)
+  # Everything on the host network so the RTP stream and the broker are
+  # reachable from outside the container without port bookkeeping.
+  for e in avdec_h264 h264parse; do
+    if ! gst-inspect-1.0 "$e" >/dev/null 2>&1; then
+      echo "missing GStreamer element '$e' on this machine." >&2
+      echo "  sudo apt install gstreamer1.0-libav gstreamer1.0-plugins-bad" >&2
+      exit 1
+    fi
+  done
+
+  rule "Live: the service streams H.264 and publishes telemetry until Ctrl-C"
+
+  cid=$(docker run -d --rm --network host --security-opt seccomp=unconfined \
+          -v "$HERE:/work" --entrypoint bash "$IMAGE" -c '
+            mosquitto -d -p 1883 2>/dev/null; sleep 1
+            exec /work/build-container-demo/optronic \
+              --stream --host 127.0.0.1 --port 5600 \
+              --broker 127.0.0.1 --node sight-01 --nuc 20 --debug')
+
+  # The window is opened by the host, which already has a display; the
+  # container only produces the stream.
+  gst-launch-1.0 -q udpsrc port=5600 caps="application/x-rtp,media=video,encoding-name=H264,payload=96" \
+    ! rtpjitterbuffer latency=50 ! rtph264depay ! h264parse ! avdec_h264 \
+    ! videoconvert ! autovideosink sync=false >/dev/null 2>&1 &
+  viewer=$!
+
+  cleanup() {
+    kill "$viewer" 2>/dev/null || true
+    docker kill "$cid" >/dev/null 2>&1 || true
+    echo; echo "stopped."
+  }
+  trap cleanup EXIT INT TERM
+
+  echo "  video window opening; telemetry below. Ctrl-C to stop."
+  echo "  (a NUC runs 20 s in - watch the event topic)"
+  echo
+  sleep 2
+  docker run --rm --network host --entrypoint mosquitto_sub "$IMAGE" \
+    -v -t 'optronic/#' | sed -u 's/^/  /'
+  ;;
+
 *)
-  sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
+  sed -n '2,16p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
   ;;
 esac

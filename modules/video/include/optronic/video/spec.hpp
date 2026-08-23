@@ -28,6 +28,9 @@ struct SourceSpec {
   std::uint32_t height = 720;
   std::uint32_t fps = 30;
   PixelFormat fmt = PixelFormat::nv12;
+  // videotestsrc pattern: 0 = SMPTE bars, 18 = a moving ball. A moving image
+  // shows at a glance that frames are live and not one held picture.
+  std::uint32_t pattern = 0;
 };
 
 struct EncoderSpec {

@@ -8,16 +8,6 @@
 namespace optronic::video {
 namespace {
 
-std::string_view source_element(SourceKind k) {
-  switch (k) {
-  case SourceKind::v4l2:
-    return "v4l2src";
-  case SourceKind::test_pattern:
-    break;
-  }
-  return "videotestsrc";
-}
-
 // A leaky queue drops the oldest buffer; a blocking one would push the stall
 // upstream into the capture thread, which is worse than losing a frame.
 std::string queue(const QueueSpec& q) {
@@ -100,14 +90,23 @@ std::string launch_string(const PipelineSpec& s) {
       std::format("video/x-raw,format={},width={},height={},framerate={}/1",
                   format_string(s.source.fmt), s.source.width, s.source.height, s.source.fps);
 
+  // A camera hands over whatever its sensor produces - YUY2 or MJPEG on a
+  // typical USB device - so the v4l2 branch negotiates only geometry and lets
+  // videoconvert reach the format the rest of the graph is fixed to. The test
+  // pattern can be asked for the target format directly.
+  const std::string front =
+      s.source.kind == SourceKind::v4l2
+          ? std::format("v4l2src device={} ! video/x-raw,width={},height={},framerate={}/1 ! "
+                        "videoconvert ! {}",
+                        s.source.device, s.source.width, s.source.height, s.source.fps, caps)
+          : std::format("videotestsrc is-live=true pattern={} ! {}", s.source.pattern, caps);
+
   // Two chains in one pipeline, bridged in C++ by the processor. One pipeline
   // means one bus and one state machine for both halves.
-  const std::string capture = std::format(
-      "{}{} ! {} ! {} ! appsink name=out sync=false max-buffers=1 drop=true emit-signals=false",
-      source_element(s.source.kind),
-      s.source.kind == SourceKind::v4l2 ? std::format(" device={}", s.source.device)
-                                        : std::string{" is-live=true"},
-      caps, queue(s.queues));
+  const std::string capture =
+      std::format("{} ! {} ! appsink name=out sync=false max-buffers=1 drop=true "
+                  "emit-signals=false",
+                  front, queue(s.queues));
 
   const std::string deliver = std::format(
       "appsrc name=in is-live=true format=time block=false caps={} ! {} ! {} ! h264parse ! {}",

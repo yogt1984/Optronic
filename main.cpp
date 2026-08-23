@@ -41,6 +41,9 @@ struct Options {
   std::uint16_t port = 5600;
   bool stream = false; // default off: a demo should not need a receiver
   bool video = true;   // --no-video: run the service without a pipeline
+  bool camera = false; // --camera: v4l2 instead of the generated test pattern
+  std::string device = "/dev/video0";
+  std::uint32_t pattern = 0; // videotestsrc pattern; 18 is a moving ball
   int nuc_after = 0;   // --nuc N: run a NUC N seconds after start (0 = never)
   std::string broker;  // empty = telemetry off
   std::string node = "node1";
@@ -93,6 +96,16 @@ bool parse_args(int argc, char** argv, Options& o) {
       o.stream = true;
     } else if (a == "--no-video") {
       o.video = false;
+    } else if (a == "--camera") {
+      o.camera = true;
+    } else if (a == "--device") {
+      o.device = next();
+      if (o.device.empty())
+        return false;
+      o.camera = true;
+    } else if (a == "--pattern") {
+      if (!parse_u32(next(), o.pattern))
+        return false;
     } else if (a == "--nuc") {
       std::uint32_t sec = 0;
       if (!parse_u32(next(), sec) || sec == 0)
@@ -126,6 +139,7 @@ void usage() {
   std::fputs("usage: optronic [--gain N] [--width N] [--height N] [--fps N]\n"
              "                [--stream] [--host H] [--port P] [--seconds N]\n"
              "                [--broker HOST] [--node NAME] [--no-video] [--nuc N]\n"
+             "                [--camera] [--device /dev/videoN] [--pattern N]\n"
              "                [--debug|--quiet]\n"
              "\n"
              "Without --stream the encoded frames are discarded, so the service\n"
@@ -277,6 +291,9 @@ public:
 
   status init() override {
     video::PipelineSpec spec;
+    spec.source.kind = opt_.camera ? video::SourceKind::v4l2 : video::SourceKind::test_pattern;
+    spec.source.device = opt_.device;
+    spec.source.pattern = opt_.pattern;
     spec.source.width = opt_.width;
     spec.source.height = opt_.height;
     spec.source.fps = opt_.fps;
