@@ -53,6 +53,7 @@ elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND CMAKE_CXX_COMPILER_VERSION VERS
 endif()
 
 add_subdirectory(framework)
+add_subdirectory(modules)
 
 add_executable(optronic main.cpp)
 target_include_directories(optronic PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
