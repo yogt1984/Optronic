@@ -13,6 +13,7 @@
 #   tools/demo.sh nuc       the NUC shutter sequence, live         (~10 s)
 #   tools/demo.sh qemu      the same binary on aarch64             (~15 s)
 #   tools/demo.sh live      runs until Ctrl-C: video window + live MQTT
+#   tools/demo.sh detect    camera + YOLO, boxes drawn in the frame path
 #
 # `live` needs a decoder on this machine:
 #   sudo apt install gstreamer1.0-libav gstreamer1.0-plugins-bad
@@ -21,6 +22,8 @@
 set -euo pipefail
 
 IMAGE=${OPTRONIC_IMAGE:-optronic/debian}
+# The detector needs OpenCV, which only the :cv image carries.
+DETECT_IMAGE=${OPTRONIC_DETECT_IMAGE:-optronic/debian:cv}
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 run() {
@@ -93,6 +96,40 @@ qemu)
          --broker 127.0.0.1 --node sight-arm64 --seconds 6 2>&1 |
          sed -u "s/^/  [aarch64] /"
        sleep 1; kill $sub 2>/dev/null || true; pkill mosquitto || true'
+  ;;
+
+detect)
+  for f in models/yolov4-tiny.weights models/coco.names; do
+    [[ -s $HERE/$f ]] || { echo "missing $f - run tools/get_model.sh" >&2; exit 1; }
+  done
+  [[ -e /dev/video0 ]] || { echo "no /dev/video0" >&2; exit 1; }
+  gst-inspect-1.0 avdec_h264 >/dev/null 2>&1 ||
+    { echo "sudo apt install gstreamer1.0-libav gstreamer1.0-plugins-bad" >&2; exit 1; }
+
+  rule "Camera through the detector: boxes drawn inside the frame path"
+  echo "  point the camera at yourself, a chair, a cup - COCO classes."
+  echo "  Ctrl-C to stop."
+  echo
+
+  # --group-add: the device is owned by the host's video group, and the
+  # container's user is not in it.
+  cid=$(docker run -d --rm --network host --security-opt seccomp=unconfined \
+          --device /dev/video0 --group-add "$(stat -c '%g' /dev/video0)" \
+          -v "$HERE:/work" --entrypoint bash "$DETECT_IMAGE" -c '
+            mosquitto -d -p 1883 2>/dev/null; sleep 1
+            exec /work/build-cv/optronic --camera --width 640 --height 480 \
+              --detect --stream --host 127.0.0.1 --port 5600 \
+              --broker 127.0.0.1 --node sight-01')
+
+  gst-launch-1.0 -q udpsrc port=5600 caps="application/x-rtp,media=video,encoding-name=H264,payload=96" \
+    ! rtpjitterbuffer latency=50 ! rtph264depay ! h264parse ! avdec_h264 \
+    ! videoconvert ! autovideosink sync=false >/dev/null 2>&1 &
+  viewer=$!
+  cleanup() { kill "$viewer" 2>/dev/null || true; docker kill "$cid" >/dev/null 2>&1 || true; echo; echo "stopped."; }
+  trap cleanup EXIT INT TERM
+
+  sleep 2
+  docker logs -f "$cid" 2>&1 | grep --line-buffered -E 'detect|NUC|PLAYING' | sed -u 's/^/  /'
   ;;
 
 live)

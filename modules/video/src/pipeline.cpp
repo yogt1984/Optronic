@@ -42,9 +42,9 @@ PixelFormat format_from_caps(GstCaps* caps) noexcept {
 class Pipeline::Impl {
 public:
   Impl(GstPtr<GstElement> pipeline, GstElement* appsink, GstElement* appsrc, PipelineSpec spec,
-       FrameSink& frames, BusSink& bus)
+       FrameSink& frames, BusSink& bus, Pipeline::Transform transform)
       : pipeline_(std::move(pipeline)), appsink_(appsink), appsrc_(appsrc), spec_(std::move(spec)),
-        frames_(frames), bus_(bus) {}
+        frames_(frames), bus_(bus), transform_(std::move(transform)) {}
 
   ~Impl() { shutdown(); }
 
@@ -157,7 +157,15 @@ private:
     if (buffer == nullptr)
       return GST_FLOW_OK;
 
-    const MapGuard map{buffer, GST_MAP_READ};
+    // Read-only unless a transform is installed: mapping writable on a shared
+    // buffer forces a copy, and the passthrough case must not pay for a
+    // feature it does not use.
+    const GstMapFlags flags =
+        transform_ ? static_cast<GstMapFlags>(GST_MAP_READ | GST_MAP_WRITE) : GST_MAP_READ;
+    if (transform_)
+      buffer = gst_buffer_make_writable(buffer);
+
+    const MapGuard map{buffer, flags};
     if (!map.ok())
       return GST_FLOW_OK;
 
@@ -170,6 +178,18 @@ private:
     view.hw_ts_ns = GST_BUFFER_PTS_IS_VALID(buffer) ? GST_BUFFER_PTS(buffer) : 0;
     view.seq = frames_in_.fetch_add(1, std::memory_order_relaxed);
     view.ch = spec_.channel;
+
+    if (transform_) {
+      WritableFrame out{};
+      out.data = map.writable_bytes();
+      out.width = view.width;
+      out.height = view.height;
+      out.stride = view.stride;
+      out.fmt = view.fmt;
+      if (transform_(view, out) == ProcessResult::error) {
+        drops_.fetch_add(1, std::memory_order_relaxed);
+      }
+    }
 
     const FlowResult res = frames_.on_frame(view);
     if (res == FlowResult::stop)
@@ -216,13 +236,15 @@ private:
   PipelineSpec spec_;
   FrameSink& frames_;
   BusSink& bus_;
+  Pipeline::Transform transform_;
   std::atomic<std::uint64_t> frames_in_{0};
   std::atomic<std::uint64_t> frames_out_{0};
   std::atomic<std::uint64_t> drops_{0};
   std::jthread bus_thread_;
 };
 
-expected<Pipeline> Pipeline::create(const PipelineSpec& spec, FrameSink& frames, BusSink& bus) {
+expected<Pipeline> Pipeline::create(const PipelineSpec& spec, FrameSink& frames, BusSink& bus,
+                                    Transform transform) {
   ensure_gst_initialised();
 
   const std::string desc = launch_string(spec);
@@ -241,7 +263,8 @@ expected<Pipeline> Pipeline::create(const PipelineSpec& spec, FrameSink& frames,
   if (!sink)
     return fail(Code::vid_build, "Pipeline::create");
 
-  auto impl = std::make_unique<Impl>(std::move(pipeline), sink.get(), src.get(), spec, frames, bus);
+  auto impl = std::make_unique<Impl>(std::move(pipeline), sink.get(), src.get(), spec, frames, bus,
+                                     std::move(transform));
   impl->install_callbacks();
   return Pipeline{std::move(impl)};
 }

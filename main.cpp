@@ -24,6 +24,9 @@
 #if OPTRONIC_WITH_VIDEO
 #include "optronic/video/pipeline.hpp"
 #endif
+#if OPTRONIC_WITH_DETECT
+#include "optronic/detect/yolo.hpp"
+#endif
 #if OPTRONIC_WITH_TELEMETRY
 #include "optronic/telemetry/publisher.hpp"
 #endif
@@ -44,8 +47,9 @@ struct Options {
   bool camera = false; // --camera: v4l2 instead of the generated test pattern
   std::string device = "/dev/video0";
   std::uint32_t pattern = 0; // videotestsrc pattern; 18 is a moving ball
-  int nuc_after = 0;   // --nuc N: run a NUC N seconds after start (0 = never)
-  std::string broker;  // empty = telemetry off
+  bool detect = false;       // --detect: run the YOLO stage over each frame
+  int nuc_after = 0;         // --nuc N: run a NUC N seconds after start (0 = never)
+  std::string broker;        // empty = telemetry off
   std::string node = "node1";
   int seconds = 0; // 0 = run until SIGTERM
   log::Level level = log::Level::info;
@@ -98,6 +102,8 @@ bool parse_args(int argc, char** argv, Options& o) {
       o.video = false;
     } else if (a == "--camera") {
       o.camera = true;
+    } else if (a == "--detect") {
+      o.detect = true;
     } else if (a == "--device") {
       o.device = next();
       if (o.device.empty())
@@ -139,7 +145,7 @@ void usage() {
   std::fputs("usage: optronic [--gain N] [--width N] [--height N] [--fps N]\n"
              "                [--stream] [--host H] [--port P] [--seconds N]\n"
              "                [--broker HOST] [--node NAME] [--no-video] [--nuc N]\n"
-             "                [--camera] [--device /dev/videoN] [--pattern N]\n"
+             "                [--camera] [--device /dev/videoN] [--pattern N] [--detect]\n"
              "                [--debug|--quiet]\n"
              "\n"
              "Without --stream the encoded frames are discarded, so the service\n"
@@ -303,7 +309,23 @@ public:
 
     logger_.log(log::Level::debug, "video", video::launch_string(spec).c_str());
 
-    auto pipe = video::Pipeline::create(spec, *this, *this);
+    video::Pipeline::Transform transform;
+#if OPTRONIC_WITH_DETECT
+    if (opt_.detect) {
+      auto y = detect::Yolo::create();
+      if (!y) {
+        logger_.log(log::Level::error, "detect", "model not loaded - run tools/get_model.sh");
+        return std::unexpected(y.error());
+      }
+      yolo_.emplace(std::move(*y));
+      logger_.log(log::Level::info, "detect", "YOLOv4-tiny loaded");
+      transform = [this](const video::FrameView& in, video::WritableFrame& out) noexcept {
+        return yolo_->process(in, out);
+      };
+    }
+#endif
+
+    auto pipe = video::Pipeline::create(spec, *this, *this, std::move(transform));
     if (!pipe)
       return std::unexpected(pipe.error());
     pipeline_.emplace(std::move(*pipe));
@@ -339,6 +361,18 @@ private:
     // One line per second rather than per frame: the ring would absorb 30/s
     // happily, but a human reading the demo would not.
     if (f.seq % opt_.fps == 0) {
+#if OPTRONIC_WITH_DETECT
+      if (yolo_) {
+        logger_.log(
+            log::Level::info, "detect", "frame",
+            std::array{
+                log::KeyValue::of("seq", static_cast<std::int64_t>(f.seq)),
+                log::KeyValue::of("objects", static_cast<std::int64_t>(yolo_->last().size())),
+                log::KeyValue::of("infer_ms", static_cast<std::int64_t>(
+                                                  yolo_->last_inference().count() / 1000))});
+        return video::FlowResult::ok;
+      }
+#endif
       logger_.log(log::Level::info, "video", "frame",
                   std::array{log::KeyValue::of("seq", static_cast<std::int64_t>(f.seq)),
                              log::KeyValue::of("bytes", static_cast<std::int64_t>(f.data.size()))});
@@ -355,6 +389,9 @@ private:
 
   log::Logger& logger_;
   const Options& opt_;
+#if OPTRONIC_WITH_DETECT
+  std::optional<detect::Yolo> yolo_;
+#endif
   std::optional<video::Pipeline> pipeline_;
 };
 #endif

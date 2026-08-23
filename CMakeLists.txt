@@ -92,6 +92,13 @@ else()
   target_compile_definitions(optronic PRIVATE OPTRONIC_WITH_VIDEO=0)
 endif()
 
+if(TARGET optronic::detect)
+  target_link_libraries(optronic PRIVATE optronic::detect)
+  target_compile_definitions(optronic PRIVATE OPTRONIC_WITH_DETECT=1)
+else()
+  target_compile_definitions(optronic PRIVATE OPTRONIC_WITH_DETECT=0)
+endif()
+
 if(TARGET optronic::telemetry)
   target_link_libraries(optronic PRIVATE optronic::telemetry)
   target_compile_definitions(optronic PRIVATE OPTRONIC_WITH_TELEMETRY=1)

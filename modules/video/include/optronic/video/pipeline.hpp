@@ -6,9 +6,11 @@
 
 #include "optronic/core/expected.hpp"
 #include "optronic/video/frame.hpp"
+#include "optronic/video/processor.hpp"
 #include "optronic/video/spec.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 
 namespace optronic::video {
@@ -23,7 +25,15 @@ class Pipeline {
 public:
   // The sinks are references, not owners: they outlive the pipeline by
   // contract, which the lifecycle enforces by stopping video first (SPEC-01).
-  [[nodiscard]] static expected<Pipeline> create(const PipelineSpec&, FrameSink&, BusSink&);
+  // A stage that may modify the frame on its way through. Type-erased rather
+  // than the Processor concept directly, because which processor runs is a
+  // configuration choice made at startup; the concept still constrains what
+  // can be handed in. Runs on the streaming thread, so the same rules apply:
+  // no allocation worth mentioning, no locks held long, no exceptions.
+  using Transform = std::function<ProcessResult(const FrameView&, WritableFrame&)>;
+
+  [[nodiscard]] static expected<Pipeline> create(const PipelineSpec&, FrameSink&, BusSink&,
+                                                 Transform = {});
 
   Pipeline(Pipeline&&) noexcept;
   Pipeline& operator=(Pipeline&&) noexcept;
