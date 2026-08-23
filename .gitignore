@@ -16,4 +16,4 @@ optronic-aarch64.tar.gz
 
 # demo scratch
 .gst-registry-*.bin
-build-demo*/
+build-container-*/
