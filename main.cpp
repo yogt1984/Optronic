@@ -1,400 +1,442 @@
-/*
- * optronic_node - sensor node application
- *
- * grabs frames from the ISP, "encodes" them and prints statistics.
- * register access is emulated on the PC with a static array, on the
- * target g_regs is supposed to be the mmap'ed UIO region.
- */
+// optronic - sensor node service.
+//
+// The whole program is three components in a declared order: logging, the
+// sensor behind the HAL, then video. Nothing here does any work itself; it
+// wires the pieces together and hands control to the lifecycle, which is the
+// point of having a framework at all (SPEC-01 §1, SPEC-02).
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stdint.h>
-#include <unistd.h>
-#include <signal.h>
-#include <errno.h>
-#include <time.h>
-#include <pthread.h>
-#include <sys/time.h>
+#include "optronic/app/app.hpp"
+#include "optronic/hal/isp_ctrl.hpp"
+#include "optronic/log/logger.hpp"
 
-#include "regs.h"
+#include <array>
+#include <charconv>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <optional>
+#include <string_view>
+#include <thread>
 
-/* ------------------------------------------------------------------ */
-/* configuration                                                       */
-/* ------------------------------------------------------------------ */
+#if OPTRONIC_WITH_VIDEO
+#include "optronic/video/pipeline.hpp"
+#endif
+#if OPTRONIC_WITH_TELEMETRY
+#include "optronic/telemetry/publisher.hpp"
 
-#define MAX_CFG_LINE    256
-#define RING_SIZE       8
-#define DEFAULT_W       1920
-#define DEFAULT_H       1080
-#define DEFAULT_FPS     30
-#define DEFAULT_GAIN    256
+#include <functional>
+#endif
 
-int   g_width    = DEFAULT_W;
-int   g_height   = DEFAULT_H;
-int   g_fps      = DEFAULT_FPS;
-int   g_gain     = DEFAULT_GAIN;
-int   g_verbose  = 0;
-int   g_max_frames = 0;         /* 0 = run forever */
-char  g_cfg_path[MAX_CFG_LINE] = "optronic.cfg";
-char  g_log_prefix[32] = "[INFO]";
+namespace {
 
-int   running = 1;              /* set to 0 by signal handler */
-int   reload_gain = 0;          /* set by SIGUSR1 */
+using namespace optronic;
 
-/* ------------------------------------------------------------------ */
-/* register access                                                     */
-/* ------------------------------------------------------------------ */
-
-static uint32_t fake_regs[ISP_SIZE / 4];
-volatile uint32_t* g_regs = fake_regs;
-
-static inline uint32_t reg_rd(uint32_t off)
-{
-    return g_regs[off / 4];
-}
-
-static inline void reg_wr(uint32_t off, uint32_t val)
-{
-    g_regs[off / 4] = val;
-}
-
-static void isp_init(void)
-{
-    memset(fake_regs, 0, sizeof(fake_regs));
-    reg_wr(ISP_ID, ISP_ID_MAGIC);
-    reg_wr(ISP_VERSION, 0x00010000);
-    reg_wr(ISP_FRAME_W, (uint32_t)g_width);
-    reg_wr(ISP_FRAME_H, (uint32_t)g_height);
-    reg_wr(ISP_GAIN, g_gain & GAIN_MASK);
-    reg_wr(ISP_TEMP_MC, 41250);
-    reg_wr(ISP_CTRL, CTRL_ENABLE);
-    reg_wr(ISP_STATUS, STAT_RUNNING);
-}
-
-/* ------------------------------------------------------------------ */
-/* frames and ring                                                     */
-/* ------------------------------------------------------------------ */
-
-struct Frame {
-    uint8_t* data;
-    int w;
-    int h;
-    int stride;
-    uint64_t ts;        /* us since epoch */
-    uint32_t seq;
+struct Options {
+  std::uint32_t gain = 0x0100;
+  std::uint32_t width = 1280;
+  std::uint32_t height = 720;
+  std::uint32_t fps = 30;
+  std::string host = "127.0.0.1";
+  std::uint16_t port = 5600;
+  bool stream = false; // default off: a demo should not need a receiver
+  bool video = true;   // --no-video: run the service without a pipeline
+  std::string broker;  // empty = telemetry off
+  std::string node = "node1";
+  int seconds = 0; // 0 = run until SIGTERM
+  log::Level level = log::Level::info;
 };
 
-Frame*          ring[RING_SIZE];
-int             ring_head = 0;
-int             ring_tail = 0;
-int             ring_count = 0;
-pthread_mutex_t ring_lock = PTHREAD_MUTEX_INITIALIZER;
-uint32_t        frames_dropped = 0;
-
-static uint64_t now_us(void)
-{
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (uint64_t)tv.tv_sec * 1000000ULL + (uint64_t)tv.tv_usec;
+bool parse_u32(std::string_view s, std::uint32_t& out) {
+  const auto* end = s.data() + s.size();
+  return std::from_chars(s.data(), end, out).ptr == end;
 }
 
-static Frame* frame_alloc(int w, int h)
-{
-    Frame* f = new Frame;
-    f->w = w;
-    f->h = h;
-    f->stride = w;
-    f->data = new uint8_t[w * h];
-    f->ts = 0;
-    f->seq = 0;
-    return f;
+// Deliberately not a config file yet: framework/config is specified and not
+// implemented, and inventing half of it here would be worse than a flag.
+bool parse_args(int argc, char** argv, Options& o) {
+  for (int i = 1; i < argc; ++i) {
+    const std::string_view a{argv[i]};
+    const auto next = [&]() -> std::string_view {
+      return (i + 1 < argc) ? std::string_view{argv[++i]} : std::string_view{};
+    };
+
+    // Each option gets its own block. Folding the parse into the condition
+    // (`a == "--gain" && !parse(...)`) reads well and is wrong: on a
+    // successful parse the condition is false and the argument falls through
+    // to the unknown-option branch below.
+    if (a == "--gain") {
+      if (!parse_u32(next(), o.gain))
+        return false;
+    } else if (a == "--width") {
+      if (!parse_u32(next(), o.width) || o.width == 0)
+        return false;
+    } else if (a == "--height") {
+      if (!parse_u32(next(), o.height) || o.height == 0)
+        return false;
+    } else if (a == "--fps") {
+      if (!parse_u32(next(), o.fps) || o.fps == 0)
+        return false;
+    } else if (a == "--host") {
+      o.host = next();
+      if (o.host.empty())
+        return false;
+      o.stream = true;
+    } else if (a == "--port") {
+      std::uint32_t p = 0;
+      if (!parse_u32(next(), p) || p == 0 || p > 65535)
+        return false;
+      o.port = static_cast<std::uint16_t>(p);
+      o.stream = true;
+    } else if (a == "--stream") {
+      o.stream = true;
+    } else if (a == "--no-video") {
+      o.video = false;
+    } else if (a == "--broker") {
+      o.broker = next();
+      if (o.broker.empty())
+        return false;
+    } else if (a == "--node") {
+      o.node = next();
+      if (o.node.empty())
+        return false;
+    } else if (a == "--seconds") {
+      std::uint32_t sec = 0;
+      if (!parse_u32(next(), sec))
+        return false;
+      o.seconds = static_cast<int>(sec);
+    } else if (a == "--debug") {
+      o.level = log::Level::debug;
+    } else if (a == "--quiet") {
+      o.level = log::Level::warn;
+    } else {
+      return false; // --help included: it prints the usage and exits
+    }
+  }
+  return true;
 }
 
-static void frame_free(Frame* f)
-{
-    if (f) {
-        delete[] f->data;
-        delete f;
-    }
+void usage() {
+  std::fputs("usage: optronic [--gain N] [--width N] [--height N] [--fps N]\n"
+             "                [--stream] [--host H] [--port P] [--seconds N]\n"
+             "                [--broker HOST] [--node NAME] [--no-video]\n"
+             "                [--debug|--quiet]\n"
+             "\n"
+             "Without --stream the encoded frames are discarded, so the service\n"
+             "runs anywhere. With it, receive them e.g. with\n"
+             "  gst-launch-1.0 udpsrc port=5600 ! application/x-rtp,encoding-name=H264 \\\n"
+             "    ! rtph264depay ! avdec_h264 ! autovideosink\n"
+             "\n"
+             "--broker enables MQTT telemetry; watch it with\n"
+             "  mosquitto_sub -v -t 'optronic/#'\n",
+             stderr);
 }
 
-static int ring_push(Frame* f)
-{
-    pthread_mutex_lock(&ring_lock);
-    if (ring_count == RING_SIZE) {
-        /* full - drop the new one */
-        frames_dropped++;
-        pthread_mutex_unlock(&ring_lock);
-        return -1;
+// Owns the sink thread. First up and last down, so every other component can
+// log during its own startup and shutdown.
+class LogService final : public app::Component {
+public:
+  explicit LogService(log::Logger& logger) noexcept : logger_(logger) {}
+
+  std::string_view name() const noexcept override { return "log"; }
+  status init() override { return {}; }
+
+  status start() override {
+    logger_.start();
+    logger_.log(log::Level::info, "log", "sink thread running");
+    return {};
+  }
+
+  void stop() noexcept override {
+    const log::Stats s = logger_.stats();
+    logger_.log(log::Level::info, "log", "sink stopping",
+                std::array{log::KeyValue::of("written", static_cast<std::int64_t>(s.written)),
+                           log::KeyValue::of("dropped", static_cast<std::int64_t>(s.dropped))});
+    logger_.stop();
+  }
+
+private:
+  log::Logger& logger_;
+};
+
+// The PL block behind the HAL. On a laptop that is FakeMmio with the ISP model
+// installed; on the target the same code runs against UioRegion, because both
+// satisfy MmioBackend and nothing above this line knows the difference.
+class SensorService final : public app::Component {
+public:
+  SensorService(log::Logger& logger, const Options& opt) noexcept : logger_(logger), opt_(opt) {}
+
+  std::string_view name() const noexcept override { return "sensor"; }
+
+  status init() override {
+    hal::isp::install_isp_model(dev_);
+
+    if (const status s = hal::isp::power_on_bit(regs_); !s) {
+      logger_.log(log::Level::error, "sensor", "power-on BIT failed",
+                  std::array{log::KeyValue::of("code", static_cast<std::int64_t>(s.error().code))});
+      return s;
     }
-    ring[ring_head] = f;
-    ring_head = (ring_head + 1) % RING_SIZE;
-    ring_count++;
-    pthread_mutex_unlock(&ring_lock);
-    return 0;
-}
+    logger_.log(log::Level::info, "sensor", "power-on BIT passed");
+    return {};
+  }
 
-static Frame* ring_pop(void)
-{
-    Frame* f = NULL;
-    pthread_mutex_lock(&ring_lock);
-    if (ring_count > 0) {
-        f = ring[ring_tail];
-        ring[ring_tail] = NULL;
-        ring_tail = (ring_tail + 1) % RING_SIZE;
-        ring_count--;
-    }
-    pthread_mutex_unlock(&ring_lock);
-    return f;
-}
+  status start() override {
+    // SPEC-04 §3: resolution only changes while the block is stopped.
+    regs_.clear_bits(hal::isp::ctrl, hal::isp::ctrl_bits::enable);
+    regs_.write(hal::isp::frame_w, opt_.width);
+    regs_.write(hal::isp::frame_h, opt_.height);
+    regs_.write(hal::isp::gain, opt_.gain & hal::isp::kGainMask);
+    regs_.set_bits(hal::isp::ctrl, hal::isp::ctrl_bits::enable);
 
-/* ------------------------------------------------------------------ */
-/* config file: key=value                                              */
-/* ------------------------------------------------------------------ */
-
-static int load_config(const char* path)
-{
-    FILE* fp = fopen(path, "r");
-    char key[MAX_CFG_LINE];
-    char val[MAX_CFG_LINE];
-    int n = 0;
-
-    if (!fp) {
-        printf("%s no config file %s, using defaults\n", g_log_prefix, path);
-        return 0;
-    }
-
-    while (fscanf(fp, "%255[^=]=%255s\n", key, val) == 2) {
-        if (strcmp(key, "width") == 0) {
-            g_width = atoi(val);
-        } else if (strcmp(key, "height") == 0) {
-            g_height = atoi(val);
-        } else if (strcmp(key, "fps") == 0) {
-            g_fps = atoi(val);
-        } else if (strcmp(key, "gain") == 0) {
-            g_gain = atoi(val);
-        } else if (strcmp(key, "verbose") == 0) {
-            g_verbose = atoi(val);
-        } else {
-            printf("[WARN] unknown key %s\n", key);
-        }
-        n++;
-    }
-    fclose(fp);
-    printf("%s loaded %d keys from %s\n", g_log_prefix, n, path);
-    return n;
-}
-
-/* ------------------------------------------------------------------ */
-/* grab thread                                                         */
-/* ------------------------------------------------------------------ */
-
-static void fill_pattern(Frame* f, uint32_t seq)
-{
-    /* moving gradient so the checksum changes per frame */
-    int y, x;
-    for (y = 0; y < f->h; y++) {
-        uint8_t* row = f->data + y * f->stride;
-        for (x = 0; x < f->w; x++) {
-            row[x] = (uint8_t)(((uint32_t)x + (uint32_t)y + seq) & 0xFF);
-        }
-    }
-}
-
-void* grab_thread(void* arg)
-{
-    uint32_t seq = 0;
-    int period_us = 1000000 / g_fps;
-    (void)arg;
-
-    printf("%s grab thread started, %dx%d @ %d fps\n", g_log_prefix,
-           g_width, g_height, g_fps);
-
-    while (running) {
-        Frame* f = frame_alloc(g_width, g_height);
-        fill_pattern(f, seq);
-        f->ts = now_us();
-        f->seq = seq++;
-
-        /* apply gain from register like the ISP would */
-        uint32_t gain = reg_rd(ISP_GAIN) & GAIN_MASK;
-        if (gain != 256) {
-            int i;
-            for (i = 0; i < f->w * f->h; i += 97) {
-                f->data[i] = (uint8_t)((f->data[i] * gain) >> 8);
-            }
-        }
-
-        reg_wr(ISP_FRAME_CNT, reg_rd(ISP_FRAME_CNT) + 1);
-        reg_wr(ISP_STATUS, reg_rd(ISP_STATUS) | STAT_FRAME_DONE);
-
-        if (ring_push(f) != 0) {
-            if (g_verbose)
-                printf("[WARN] ring full, frame %u dropped\n", f->seq);
-            /* frame is lost here */
-        }
-
-        usleep((useconds_t)period_us);
+    if (!regs_.any_bit(hal::isp::status, hal::isp::status_bits::running)) {
+      return fail(Code::not_ready, "SensorService::start");
     }
 
-    printf("%s grab thread exit\n", g_log_prefix);
-    return NULL;
-}
+    logger_.log(log::Level::info, "sensor", "running",
+                std::array{log::KeyValue::of("gain", static_cast<std::int64_t>(opt_.gain)),
+                           log::KeyValue::of("w", static_cast<std::int64_t>(opt_.width)),
+                           log::KeyValue::of("h", static_cast<std::int64_t>(opt_.height))});
+    return {};
+  }
 
-/* ------------------------------------------------------------------ */
-/* "encoder"                                                           */
-/* ------------------------------------------------------------------ */
+  void stop() noexcept override {
+    regs_.clear_bits(hal::isp::ctrl, hal::isp::ctrl_bits::enable);
+    logger_.log(log::Level::info, "sensor", "stopped");
+  }
 
-static uint32_t encode_frame(Frame* f)
-{
-    /* placeholder for the real encoder: checksum over the frame */
-    uint32_t sum = 0;
-    int i;
-    int n = f->w * f->h;
-    for (i = 0; i < n; i++) {
-        sum += f->data[i];
+  [[nodiscard]] std::int64_t temperature_mc() noexcept {
+    return static_cast<std::int32_t>(regs_.read(hal::isp::temp_mc));
+  }
+
+  [[nodiscard]] std::int64_t gain() noexcept { return regs_.read(hal::isp::gain); }
+
+  [[nodiscard]] std::uint64_t frame_count() noexcept { return regs_.read(hal::isp::frame_cnt); }
+
+private:
+  log::Logger& logger_;
+  const Options& opt_;
+  hal::FakeMmio dev_;
+  hal::RegisterFile<hal::FakeMmio> regs_{dev_};
+};
+
+#if OPTRONIC_WITH_VIDEO
+// Bridges the pipeline to the framework: frames and bus events arrive on
+// GStreamer threads and leave as log records, which is the only thing that may
+// happen there - no allocation, no locks, no exceptions (SPEC-19 §8).
+class VideoService final : public app::Component, private video::FrameSink, private video::BusSink {
+public:
+  VideoService(log::Logger& logger, const Options& opt) noexcept : logger_(logger), opt_(opt) {}
+
+  std::string_view name() const noexcept override { return "video"; }
+
+  status init() override {
+    video::PipelineSpec spec;
+    spec.source.width = opt_.width;
+    spec.source.height = opt_.height;
+    spec.source.fps = opt_.fps;
+    spec.output.kind = opt_.stream ? video::OutputKind::rtp_udp : video::OutputKind::none;
+    spec.output.host = opt_.host;
+    spec.output.port = opt_.port;
+
+    logger_.log(log::Level::debug, "video", video::launch_string(spec).c_str());
+
+    auto pipe = video::Pipeline::create(spec, *this, *this);
+    if (!pipe)
+      return std::unexpected(pipe.error());
+    pipeline_.emplace(std::move(*pipe));
+    return {};
+  }
+
+  status start() override {
+    if (const status s = pipeline_->play(); !s)
+      return s;
+    logger_.log(log::Level::info, "video", "pipeline PLAYING",
+                std::array{log::KeyValue::of("fps", static_cast<std::int64_t>(opt_.fps)),
+                           log::KeyValue::of("stream", static_cast<std::int64_t>(opt_.stream))});
+    return {};
+  }
+
+  [[nodiscard]] std::uint64_t frames() const noexcept {
+    return pipeline_ ? pipeline_->stats().frames_in : 0;
+  }
+
+  void stop() noexcept override {
+    if (!pipeline_)
+      return;
+    const video::PipelineStats st = pipeline_->stats();
+    (void)pipeline_->stop();
+    logger_.log(log::Level::info, "video", "pipeline stopped",
+                std::array{log::KeyValue::of("frames", static_cast<std::int64_t>(st.frames_in)),
+                           log::KeyValue::of("drops", static_cast<std::int64_t>(st.drops))});
+    pipeline_.reset();
+  }
+
+private:
+  video::FlowResult on_frame(const video::FrameView& f) noexcept override {
+    // One line per second rather than per frame: the ring would absorb 30/s
+    // happily, but a human reading the demo would not.
+    if (f.seq % opt_.fps == 0) {
+      logger_.log(log::Level::info, "video", "frame",
+                  std::array{log::KeyValue::of("seq", static_cast<std::int64_t>(f.seq)),
+                             log::KeyValue::of("bytes", static_cast<std::int64_t>(f.data.size()))});
     }
-    return sum;
-}
+    return video::FlowResult::ok;
+  }
 
-/* ------------------------------------------------------------------ */
-/* signals                                                             */
-/* ------------------------------------------------------------------ */
+  void on_bus(const video::BusEvent& e) noexcept override {
+    if (e.kind != video::BusEventKind::error)
+      return;
+    logger_.log(log::Level::error, "video", "bus error",
+                std::array{log::KeyValue::of("code", static_cast<std::int64_t>(e.code))});
+  }
 
-static void on_sigint(int sig)
-{
-    (void)sig;
-    printf("\n%s signal received, stopping\n", g_log_prefix);
-    running = 0;
-}
+  log::Logger& logger_;
+  const Options& opt_;
+  std::optional<video::Pipeline> pipeline_;
+};
+#endif
 
-static void on_sigusr1(int sig)
-{
-    (void)sig;
-    reload_gain = 1;
-}
+#if OPTRONIC_WITH_TELEMETRY
+// Publishes on its own thread at a fixed period. It reads other components
+// through a sampler function rather than holding references to them, so
+// telemetry depends on nothing and can be removed without touching them - the
+// direction of the dependency is the whole design (SRS-LT-04).
+class TelemetryService final : public app::Component {
+public:
+  using Sampler = std::function<telemetry::SensorSample()>;
 
-/* ------------------------------------------------------------------ */
-/* args                                                                */
-/* ------------------------------------------------------------------ */
+  TelemetryService(log::Logger& logger, const Options& opt, Sampler sampler)
+      : logger_(logger), opt_(opt), sampler_(std::move(sampler)) {}
 
-static void usage(const char* prog)
-{
-    printf("usage: %s [-c config] [-g gain] [-n frames] [-v]\n", prog);
-}
+  std::string_view name() const noexcept override { return "telemetry"; }
 
-static int parse_args(int argc, char** argv)
-{
-    int i;
-    for (i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "-c") == 0 && i + 1 < argc) {
-            strncpy(g_cfg_path, argv[++i], MAX_CFG_LINE - 1);
-        } else if (strcmp(argv[i], "-g") == 0 && i + 1 < argc) {
-            g_gain = atoi(argv[++i]);
-        } else if (strcmp(argv[i], "-n") == 0 && i + 1 < argc) {
-            g_max_frames = atoi(argv[++i]);
-        } else if (strcmp(argv[i], "-v") == 0) {
-            g_verbose = 1;
-        } else if (strcmp(argv[i], "-h") == 0) {
-            usage(argv[0]);
-            return -1;
-        } else {
-            printf("[ERR] unknown argument %s\n", argv[i]);
-            usage(argv[0]);
-            return -1;
-        }
+  status init() override {
+    telemetry::Config cfg;
+    cfg.name = opt_.node;
+    cfg.host = opt_.broker;
+    auto pub = telemetry::Publisher::create(cfg, logger_);
+    if (!pub)
+      return std::unexpected(pub.error());
+    pub_.emplace(std::move(*pub));
+    return {};
+  }
+
+  status start() override {
+    if (const status s = pub_->start(); !s)
+      return s;
+    started_ = std::chrono::steady_clock::now();
+
+    worker_ = std::jthread{[this](std::stop_token stop) {
+      while (!stop.stop_requested()) {
+        const auto up = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::steady_clock::now() - started_);
+        pub_->publish_health({"OK", static_cast<std::uint64_t>(up.count()), 0});
+        pub_->publish_sensor(sampler_());
+        std::this_thread::sleep_for(std::chrono::milliseconds{1000});
+      }
+    }};
+
+    logger_.log(log::Level::info, "telemetry", "publishing");
+    return {};
+  }
+
+  void stop() noexcept override {
+    if (worker_.joinable()) {
+      worker_.request_stop();
+      worker_.join();
     }
-    return 0;
-}
-
-/* ------------------------------------------------------------------ */
-/* main                                                                */
-/* ------------------------------------------------------------------ */
-
-int main(int argc, char** argv)
-{
-    pthread_t tid;
-    uint32_t processed = 0;
-    uint64_t t_start;
-    uint64_t t_last_stat;
-    int rc;
-
-    if (parse_args(argc, argv) != 0)
-        return 1;
-
-    load_config(g_cfg_path);
-
-    if (g_fps <= 0 || g_fps > 120) {
-        printf("[ERR] bad fps %d\n", g_fps);
-        return 1;
+    if (pub_) {
+      const telemetry::Stats s = pub_->stats();
+      pub_->stop();
+      logger_.log(log::Level::info, "telemetry", "stopped",
+                  std::array{log::KeyValue::of("published", static_cast<std::int64_t>(s.published)),
+                             log::KeyValue::of("failed", static_cast<std::int64_t>(s.failed))});
+      pub_.reset();
     }
+  }
 
-    signal(SIGINT, on_sigint);
-    signal(SIGTERM, on_sigint);
-    signal(SIGUSR1, on_sigusr1);
+private:
+  log::Logger& logger_;
+  const Options& opt_;
+  Sampler sampler_;
+  std::optional<telemetry::Publisher> pub_;
+  std::jthread worker_;
+  std::chrono::steady_clock::time_point started_{};
+};
+#endif
 
-    isp_init();
+} // namespace
 
-    printf("%s optronic_node starting, isp id 0x%08X version 0x%08X\n",
-           g_log_prefix, reg_rd(ISP_ID), reg_rd(ISP_VERSION));
+int main(int argc, char** argv) {
+  Options opt;
+  if (!parse_args(argc, argv, opt)) {
+    usage();
+    return 2;
+  }
 
-    rc = pthread_create(&tid, NULL, grab_thread, NULL);
-    if (rc != 0) {
-        printf("[ERR] pthread_create failed: %s\n", strerror(rc));
-        return 1;
-    }
+  log::Logger logger{stderr};
+  logger.set_level(opt.level);
 
-    t_start = now_us();
-    t_last_stat = t_start;
+  app::App app;
+  LogService log_service{logger};
+  SensorService sensor{logger, opt};
+  app.add(log_service);
+  app.add(sensor);
 
-    while (running) {
-        Frame* f = ring_pop();
-        if (f == NULL) {
-            usleep(1000);
-            continue;
-        }
+#if OPTRONIC_WITH_VIDEO
+  VideoService video_service{logger, opt};
+  if (opt.video)
+    app.add(video_service);
+#else
+  logger.log(log::Level::warn, "main", "built without GStreamer - no video pipeline");
+#endif
 
-        uint32_t sum = encode_frame(f);
-        uint64_t lat = now_us() - f->ts;
-        processed++;
+#if OPTRONIC_WITH_TELEMETRY
+  // Last up and first down: everything it reports on is already running when
+  // it starts, and it stops before the things it samples go away.
+  // The frame count comes from whoever actually counts frames: the pipeline
+  // when there is one, the block's own register otherwise.
+  TelemetryService telemetry_service{logger, opt, [&] {
+                                       telemetry::SensorSample s{};
+                                       s.gain = sensor.gain();
+                                       s.temp_mc = sensor.temperature_mc();
+#if OPTRONIC_WITH_VIDEO
+                                       s.frame_cnt = video_service.frames();
+#else
+                                       s.frame_cnt = sensor.frame_count();
+#endif
+                                       return s;
+                                     }};
+  if (!opt.broker.empty())
+    app.add(telemetry_service);
+#endif
 
-        if (g_verbose || (processed % 30) == 0) {
-            printf("%s frame %u sum=%u lat=%lluus\n", g_log_prefix, f->seq,
-                   sum, (unsigned long long)lat);
-        }
+  // Installed before start(): a SIGTERM arriving during startup must still be
+  // seen, not lost between the components coming up.
+  const app::SignalStop signals{app};
 
-        if (reload_gain) {
-            reload_gain = 0;
-            g_gain = (g_gain + 64) & GAIN_MASK;
-            reg_wr(ISP_GAIN, (uint32_t)g_gain);
-            printf("%s gain set to %d\n", g_log_prefix, g_gain);
-        }
+  if (const status s = app.start(); !s) {
+    // SRS-LC-03: name the component and leave with a non-zero code. The
+    // lifecycle has already stopped whatever did come up.
+    std::fprintf(stderr, "startup aborted at '%.*s' (code 0x%04x)\n",
+                 static_cast<int>(s.error().where.size()), s.error().where.data(),
+                 static_cast<unsigned>(s.error().code));
+    return 1;
+  }
 
-        if (now_us() - t_last_stat > 5000000ULL) {
-            t_last_stat = now_us();
-            printf("%s stats: processed=%u dropped=%u frame_cnt=%u temp=%d\n",
-                   g_log_prefix, processed, frames_dropped,
-                   reg_rd(ISP_FRAME_CNT), (int)reg_rd(ISP_TEMP_MC));
-        }
+  logger.log(log::Level::info, "main", "service up",
+             std::array{log::KeyValue::of("temp_mc", sensor.temperature_mc())});
 
-        frame_free(f);
+  if (opt.seconds > 0) {
+    std::jthread timer{[&app, s = opt.seconds] {
+      std::this_thread::sleep_for(std::chrono::seconds{s});
+      app.request_stop();
+    }};
+    app.wait_for_stop();
+  } else {
+    app.wait_for_stop();
+  }
 
-        if (g_max_frames > 0 && processed >= (uint32_t)g_max_frames) {
-            running = 0;
-        }
-    }
-
-    pthread_join(tid, NULL);
-
-    /* drain what is left */
-    {
-        Frame* f;
-        while ((f = ring_pop()) != NULL)
-            frame_free(f);
-    }
-
-    printf("%s done, %u frames in %.1f s\n", g_log_prefix, processed,
-           (double)(now_us() - t_start) / 1e6);
-    return 0;
+  // SRS-LC-02: components stop in reverse order and the process exits 0.
+  app.stop();
+  return 0;
 }

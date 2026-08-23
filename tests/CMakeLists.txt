@@ -78,11 +78,14 @@ gtest_discover_tests(test_log DISCOVERY_MODE PRE_TEST)
 # whole binary once, in a single process, on purpose.
 add_test(NAME log_single_process COMMAND test_log)
 
-# Same exclusion as the module itself, and for the same reason: the fences in
-# register.hpp are instantiated here too. See framework/CMakeLists.txt.
-if(NOT OPTRONIC_SANITIZER MATCHES "thread")
-  add_executable(test_hal hal/test_hal.cpp)
-  target_link_libraries(test_hal PRIVATE
-    optronic::hal optronic::warnings optronic::sanitizers GTest::gtest_main)
-  gtest_discover_tests(test_hal DISCOVERY_MODE PRE_TEST)
+add_executable(test_hal hal/test_hal.cpp)
+target_link_libraries(test_hal PRIVATE
+  optronic::hal optronic::warnings optronic::sanitizers GTest::gtest_main)
+gtest_discover_tests(test_hal DISCOVERY_MODE PRE_TEST)
+
+if(TARGET optronic::telemetry)
+  add_executable(test_telemetry telemetry/test_publisher.cpp)
+  target_link_libraries(test_telemetry PRIVATE
+    optronic::telemetry optronic::warnings optronic::sanitizers GTest::gtest_main)
+  gtest_discover_tests(test_telemetry DISCOVERY_MODE PRE_TEST)
 endif()

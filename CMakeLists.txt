@@ -56,9 +56,26 @@ add_subdirectory(framework)
 add_subdirectory(modules)
 
 add_executable(optronic main.cpp)
-target_include_directories(optronic PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
 target_link_libraries(optronic PRIVATE
-  optronic::options optronic::warnings optronic::sanitizers Threads::Threads)
+  optronic::options optronic::warnings optronic::sanitizers
+  optronic::app optronic::log optronic::hal Threads::Threads)
+
+# The service builds and runs without GStreamer; it just has no pipeline. That
+# keeps a bare host useful instead of turning a missing laptop dependency into
+# a broken program.
+if(TARGET optronic::video)
+  target_link_libraries(optronic PRIVATE optronic::video)
+  target_compile_definitions(optronic PRIVATE OPTRONIC_WITH_VIDEO=1)
+else()
+  target_compile_definitions(optronic PRIVATE OPTRONIC_WITH_VIDEO=0)
+endif()
+
+if(TARGET optronic::telemetry)
+  target_link_libraries(optronic PRIVATE optronic::telemetry)
+  target_compile_definitions(optronic PRIVATE OPTRONIC_WITH_TELEMETRY=1)
+else()
+  target_compile_definitions(optronic PRIVATE OPTRONIC_WITH_TELEMETRY=0)
+endif()
 
 install(TARGETS optronic RUNTIME DESTINATION bin)
 

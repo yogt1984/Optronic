@@ -12,6 +12,20 @@
 
 namespace optronic::hal {
 
+// GCC's ThreadSanitizer refuses to compile std::atomic_thread_fence at all
+// ("not supported with -fsanitize=thread"). These fences order accesses to
+// device memory, which TSan does not model in the first place - it reasons
+// about shared program memory - so dropping them under TSan loses no checking
+// while keeping the rest of this module instrumented. Every other build,
+// including the one that ships, has them.
+inline void device_fence(std::memory_order order) noexcept {
+#if defined(__SANITIZE_THREAD__)
+  (void)order;
+#else
+  std::atomic_thread_fence(order);
+#endif
+}
+
 struct ro_t {};
 struct wo_t {};
 struct rw_t {};
@@ -48,14 +62,14 @@ public:
     requires Readable<A>
   [[nodiscard]] std::uint32_t read(Reg<Off, A>) const noexcept {
     const std::uint32_t v = backend_->read32(Off);
-    std::atomic_thread_fence(std::memory_order_acquire);
+    device_fence(std::memory_order_acquire);
     return v;
   }
 
   template <std::uint32_t Off, class A>
     requires Writable<A>
   void write(Reg<Off, A>, std::uint32_t value) noexcept {
-    std::atomic_thread_fence(std::memory_order_release);
+    device_fence(std::memory_order_release);
     backend_->write32(Off, value);
   }
 
