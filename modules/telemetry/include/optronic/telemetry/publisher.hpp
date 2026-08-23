@@ -14,6 +14,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -51,6 +52,15 @@ struct LatencySample {
   std::uint64_t dropped = 0;
 };
 
+// One detected object, in pixels of the frame it was found in. Deliberately
+// not the detector's own type: telemetry must not depend on which detector is
+// installed, and a monitor should not have to change when the model does.
+struct DetectedObject {
+  std::string_view label;
+  float confidence = 0.0F;
+  std::int32_t x = 0, y = 0, w = 0, h = 0;
+};
+
 struct Stats {
   std::uint64_t published = 0;
   std::uint64_t failed = 0;
@@ -81,6 +91,10 @@ public:
   void publish_latency(const LatencySample&) noexcept;
   void publish_event(std::string_view id, std::uint16_t code,
                      std::string_view text) noexcept; // QoS 1
+
+  // The detections of one frame, as a list a machine can act on rather than a
+  // picture a person has to look at. QoS 0: the next frame supersedes it.
+  void publish_detections(std::uint64_t seq, std::span<const DetectedObject>) noexcept;
 
   [[nodiscard]] Stats stats() const noexcept;
   [[nodiscard]] std::string topic(std::string_view leaf) const;

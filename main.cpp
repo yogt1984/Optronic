@@ -18,6 +18,7 @@
 #include <cstdlib>
 #include <functional>
 #include <optional>
+#include <span>
 #include <string_view>
 #include <thread>
 
@@ -48,6 +49,7 @@ struct Options {
   std::string device = "/dev/video0";
   std::uint32_t pattern = 0; // videotestsrc pattern; 18 is a moving ball
   bool detect = false;       // --detect: run the YOLO stage over each frame
+  std::string model;         // --model: overrides the default weights
   int nuc_after = 0;         // --nuc N: run a NUC N seconds after start (0 = never)
   std::string broker;        // empty = telemetry off
   std::string node = "node1";
@@ -104,6 +106,11 @@ bool parse_args(int argc, char** argv, Options& o) {
       o.camera = true;
     } else if (a == "--detect") {
       o.detect = true;
+    } else if (a == "--model") {
+      o.model = next();
+      if (o.model.empty())
+        return false;
+      o.detect = true;
     } else if (a == "--device") {
       o.device = next();
       if (o.device.empty())
@@ -145,7 +152,8 @@ void usage() {
   std::fputs("usage: optronic [--gain N] [--width N] [--height N] [--fps N]\n"
              "                [--stream] [--host H] [--port P] [--seconds N]\n"
              "                [--broker HOST] [--node NAME] [--no-video] [--nuc N]\n"
-             "                [--camera] [--device /dev/videoN] [--pattern N] [--detect]\n"
+             "                [--camera] [--device /dev/videoN] [--pattern N]\n"
+             "                [--detect] [--model models/yolov5s.onnx]\n"
              "                [--debug|--quiet]\n"
              "\n"
              "Without --stream the encoded frames are discarded, so the service\n"
@@ -291,6 +299,15 @@ private:
 // happen there - no allocation, no locks, no exceptions (SPEC-19 §8).
 class VideoService final : public app::Component, private video::FrameSink, private video::BusSink {
 public:
+#if OPTRONIC_WITH_TELEMETRY
+  // Detections leave through a callback rather than a reference to the
+  // publisher: video does not depend on telemetry existing, and the wiring
+  // stays in main where both are visible.
+  using DetectionSink =
+      std::function<void(std::uint64_t seq, std::span<const telemetry::DetectedObject>)>;
+  void on_detections(DetectionSink sink) { detections_ = std::move(sink); }
+#endif
+
   VideoService(log::Logger& logger, const Options& opt) noexcept : logger_(logger), opt_(opt) {}
 
   std::string_view name() const noexcept override { return "video"; }
@@ -312,13 +329,17 @@ public:
     video::Pipeline::Transform transform;
 #if OPTRONIC_WITH_DETECT
     if (opt_.detect) {
-      auto y = detect::Yolo::create();
+      detect::YoloConfig ycfg;
+      if (!opt_.model.empty())
+        ycfg.weights = opt_.model;
+      ycfg.frame_period = std::chrono::microseconds{1'000'000 / opt_.fps};
+      auto y = detect::Yolo::create(ycfg);
       if (!y) {
         logger_.log(log::Level::error, "detect", "model not loaded - run tools/get_model.sh");
         return std::unexpected(y.error());
       }
       yolo_.emplace(std::move(*y));
-      logger_.log(log::Level::info, "detect", "YOLOv4-tiny loaded");
+      logger_.log(log::Level::info, "detect", std::string{yolo_->model()}.c_str());
       transform = [this](const video::FrameView& in, video::WritableFrame& out) noexcept {
         return yolo_->process(in, out);
       };
@@ -363,13 +384,23 @@ private:
     if (f.seq % opt_.fps == 0) {
 #if OPTRONIC_WITH_DETECT
       if (yolo_) {
+#if OPTRONIC_WITH_TELEMETRY
+        if (detections_) {
+          const auto found = yolo_->last();
+          std::vector<telemetry::DetectedObject> list;
+          list.reserve(found.size());
+          for (const auto& d : found)
+            list.push_back({d.label, d.confidence, d.x, d.y, d.w, d.h});
+          detections_(f.seq, list);
+        }
+#endif
         logger_.log(
             log::Level::info, "detect", "frame",
             std::array{
-                log::KeyValue::of("seq", static_cast<std::int64_t>(f.seq)),
                 log::KeyValue::of("objects", static_cast<std::int64_t>(yolo_->last().size())),
-                log::KeyValue::of("infer_ms", static_cast<std::int64_t>(
-                                                  yolo_->last_inference().count() / 1000))});
+                log::KeyValue::of(
+                    "infer_ms", static_cast<std::int64_t>(yolo_->last_inference().count() / 1000)),
+                log::KeyValue::of("every", static_cast<std::int64_t>(yolo_->stride()))});
         return video::FlowResult::ok;
       }
 #endif
@@ -391,6 +422,9 @@ private:
   const Options& opt_;
 #if OPTRONIC_WITH_DETECT
   std::optional<detect::Yolo> yolo_;
+#endif
+#if OPTRONIC_WITH_TELEMETRY
+  DetectionSink detections_;
 #endif
   std::optional<video::Pipeline> pipeline_;
 };
@@ -443,6 +477,12 @@ public:
   void publish_event(std::string_view id, std::uint16_t code, std::string_view text) noexcept {
     if (pub_)
       pub_->publish_event(id, code, text);
+  }
+
+  void publish_detections(std::uint64_t seq,
+                          std::span<const telemetry::DetectedObject> objects) noexcept {
+    if (pub_)
+      pub_->publish_detections(seq, objects);
   }
 
   void stop() noexcept override {
@@ -521,6 +561,13 @@ int main(int argc, char** argv) {
         [&telemetry_service](std::string_view id, std::uint16_t code, std::string_view text) {
           telemetry_service.publish_event(id, code, text);
         });
+#if OPTRONIC_WITH_VIDEO
+    video_service.on_detections(
+        [&telemetry_service](std::uint64_t seq,
+                             std::span<const telemetry::DetectedObject> objects) {
+          telemetry_service.publish_detections(seq, objects);
+        });
+#endif
   }
 #endif
 

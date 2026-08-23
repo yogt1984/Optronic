@@ -95,16 +95,35 @@ way out:
 ```
 $ tools/cameras.sh --probe          # which /dev/video* actually delivers frames
 $ tools/demo.sh detect              # camera -> YOLO -> boxes -> RTP -> window
-INFO  detect  YOLOv4-tiny loaded
-INFO  detect  frame seq=30 objects=2 infer_ms=112
+INFO  detect  models/yolov5s.onnx
+INFO  detect  frame objects=2 infer_ms=1151 every=35
+```
+
+and the objects leave as data, not only as pixels:
+
+```
+optronic/sight-01/detections {"v":1,"seq":4242,"count":3,"objects":[
+  {"label":"person","conf":0.91,"x":100,"y":50,"w":80,"h":200},
+  {"label":"chair","conf":0.55,"x":12,"y":4,"w":60,"h":70}],"truncated":false}
 ```
 
 That stage is a `Processor`: it sees a `FrameView` and a `WritableFrame` and no
 GStreamer type at all. Detection runs on the luma plane directly - an NV12 Y
-plane is already a valid greyscale image - and only on every third frame,
-because 110-170 ms of inference against a 33 ms frame period is the sort of
-budget problem the design exists to make visible rather than hide. On the
-target this is where a DPU would sit.
+plane is already a valid greyscale image, so a full-frame colour conversion per
+inference is avoided.
+
+`every=35` is not a constant. The stage times itself and skips however many
+frames its own latency costs, so a slow model degrades the detection rate
+rather than the frame rate:
+
+| Model | Inference | Skips | Note |
+|---|---|---|---|
+| `yolov5s.onnx` | ~1150 ms | 35 frames | more accurate; its raw `[1, 25200, 85]` output is decoded and NMS-ed here, because OpenCV cannot parse it |
+| `yolov4-tiny` | ~290 ms | 9 frames | darknet format, read straight through `DetectionModel` |
+
+Both are selected with `--model`, and which decoder runs is deduced from the
+file name. On the target this stage is where a DPU would sit, and the same
+self-pacing would then report a stride of 1.
 
 `--nuc N` runs the non-uniformity correction of `docs/04_HAL_REGISTER_MAP.md`
 §3.1 - the one procedure a thermal channel has and a visual camera does not:
@@ -135,7 +154,8 @@ The specifications in `docs/` describe the whole system. The code implements par
 | `modules/telemetry` — MQTT over libmosquitto, last will, backoff | built |
 | the service: BIT, sensor, video, telemetry and logging under one lifecycle | built |
 | `qemu` stage: the aarch64 binaries run under user-mode emulation | built |
-| `modules/detect` — YOLOv4-tiny over the frame path, boxes drawn in place | built |
+| `modules/detect` — YOLOv5 (ONNX) or YOLOv4-tiny, boxes drawn in place | built |
+| `optronic/<name>/detections` — the objects of a frame as a list, not a picture | built |
 | camera input: v4l2 source, device enumeration, format conversion | built |
 | `modules/sensor` — the NUC shutter sequence, its timeouts and recovery | built |
 | `framework/config · ipc · health · time` | specified, not implemented |
