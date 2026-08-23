@@ -89,3 +89,8 @@ if(TARGET optronic::telemetry)
     optronic::telemetry optronic::warnings optronic::sanitizers GTest::gtest_main)
   gtest_discover_tests(test_telemetry DISCOVERY_MODE PRE_TEST)
 endif()
+
+add_executable(test_sensor sensor/test_nuc.cpp)
+target_link_libraries(test_sensor PRIVATE
+  optronic::sensor optronic::warnings optronic::sanitizers GTest::gtest_main)
+gtest_discover_tests(test_sensor DISCOVERY_MODE PRE_TEST)

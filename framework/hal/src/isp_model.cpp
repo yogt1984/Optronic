@@ -1,5 +1,9 @@
 #include "optronic/hal/isp_ctrl.hpp"
 
+#include <chrono>
+#include <memory>
+#include <vector>
+
 // The behaviour of the PL block, as far as software can observe it. Keeping it
 // next to the register map rather than in the tests means every test sees the
 // same device, and a disagreement about how the hardware behaves is settled in
@@ -7,7 +11,7 @@
 
 namespace optronic::hal::isp {
 
-void install_isp_model(FakeMmio& m) {
+void install_isp_model(FakeMmio& m, const IspModel& model) {
   // Reset values, SPEC-04 §2.
   m.poke(id.offset, kIdMagic);
   m.poke(version.offset, 0x0001'0000u);
@@ -46,16 +50,51 @@ void install_isp_model(FakeMmio& m) {
     dev.poke(irq_clr.offset, 0u); // write-only: it does not read back
   });
 
-  // The shutter takes time to move; BUSY is what the NUC sequence polls.
-  m.on_write(shutter.offset, [](FakeMmio& dev, std::uint32_t v) {
+  // Commanding the shutter raises BUSY; it stays raised for a few polls, which
+  // is what makes the caller's timeout reachable in a test.
+  using clock = std::chrono::steady_clock;
+  auto shutter_ready = std::make_shared<clock::time_point>();
+  m.on_write(shutter.offset, [shutter_ready, model](FakeMmio& dev, std::uint32_t v) {
+    *shutter_ready = clock::now() + model.shutter_move;
     dev.poke(shutter.offset, (v & shutter_bits::close) | shutter_bits::busy);
   });
+  m.on_read(shutter.offset, [shutter_ready, model](FakeMmio& dev) {
+    if (model.shutter_jams)
+      return;
+    if (clock::now() >= *shutter_ready)
+      dev.poke(shutter.offset, dev.peek(shutter.offset) & ~shutter_bits::busy);
+  });
 
-  // Starting an accumulation eventually sets DONE. Immediate here; a test that
-  // wants the slow path clears DONE and drives it by hand.
-  m.on_write(nuc_acc_ctrl.offset, [](FakeMmio& dev, std::uint32_t v) {
-    if ((v & nuc_bits::start) != 0u)
+  // Likewise the accumulation: START now, DONE a few polls later.
+  auto accum_ready = std::make_shared<clock::time_point>();
+  m.on_write(nuc_acc_ctrl.offset, [accum_ready, model](FakeMmio& dev, std::uint32_t v) {
+    if ((v & nuc_bits::start) != 0u) {
+      *accum_ready = clock::now() + model.nuc_accumulate;
+      dev.poke(nuc_acc_ctrl.offset, v & ~nuc_bits::done);
+    }
+  });
+  m.on_read(nuc_acc_ctrl.offset, [accum_ready, model](FakeMmio& dev) {
+    const std::uint32_t v = dev.peek(nuc_acc_ctrl.offset);
+    if ((v & nuc_bits::start) == 0u)
+      return;
+    if (clock::now() >= *accum_ready)
       dev.poke(nuc_acc_ctrl.offset, v | nuc_bits::done);
+  });
+
+  // The coefficient window: writing ADDR selects an entry, and reading or
+  // writing DATA moves to the next one, so a table transfer is a loop over
+  // DATA rather than an address computation per element.
+  auto table = std::make_shared<std::vector<std::uint32_t>>(1024, 0);
+  m.on_write(nuc_table_data.offset, [table](FakeMmio& dev, std::uint32_t v) {
+    const std::uint32_t idx = dev.peek(nuc_table_addr.offset) & 0xFFFFu;
+    if (idx < table->size())
+      (*table)[idx] = v & 0xFFFFu;
+    dev.poke(nuc_table_addr.offset, idx + 1);
+  });
+  m.on_read(nuc_table_data.offset, [table](FakeMmio& dev) {
+    const std::uint32_t idx = dev.peek(nuc_table_addr.offset) & 0xFFFFu;
+    dev.poke(nuc_table_data.offset, idx < table->size() ? (*table)[idx] : 0u);
+    dev.poke(nuc_table_addr.offset, idx + 1);
   });
 }
 

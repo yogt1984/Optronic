@@ -92,7 +92,7 @@ The specifications in `docs/` describe the whole system. The code implements par
 | the service: BIT, sensor, video, telemetry and logging under one lifecycle | built |
 | `qemu` stage: the aarch64 binaries run under user-mode emulation | built |
 | `framework/config · ipc · health · time` | specified, not implemented |
-| `modules/sensor` | specified, not implemented |
+| `modules/sensor` — the NUC shutter sequence with its timeouts | built |
 | `tools/nodectl`, QEMU target tests | specified, not implemented |
 
 Twenty-two tests, all green, including the video pipeline running end to end against `videotestsrc`. Eleven of them need the GStreamer development files; a host without them configures, builds and tests everything else and reports the video module as skipped, which is why the container is the reference environment. Clean under ASan/UBSan with leak detection on. ThreadSanitizer covers the framework; the video module is excluded from it deliberately — see `tests/CMakeLists.txt` for why.
@@ -151,8 +151,9 @@ modules/
   sensor/ telemetry/                                     specified
 modules/
   telemetry/ MQTT publisher, last will, backoff        built
-tests/       core, app, log, hal, video, telemetry     built
-             50 host cases, 49 of them also on aarch64
+  sensor/    NUC shutter sequence, timeouts, recovery   built
+tests/       core, app, log, hal, video, telemetry,
+             sensor - 57 host cases, all also on aarch64  built
 tools/       check_deps.sh, format.sh                    built
 cmake/       toolchain file, sanitizer selection         built
 docker/      PetaLinux SDK image, Debian fallback, CI    built
@@ -211,7 +212,7 @@ template backtrace.
 
 ## What I would do next
 
-1. `modules/sensor` — the NUC shutter sequence of `docs/04 §3.1`, which is the one optronics-specific procedure every thermal channel has. The HAL and its fake already model the shutter and the accumulator, so it can be written and tested before any hardware exists.
+1. `framework/health` — the INIT/OK/DEGRADED/FAULT machine of `docs/06`. The NUC already emits the events it would consume; today they go to the log and to MQTT, but nothing owns the state.
 2. The PetaLinux QEMU machine, which boots the actual target image instead of emulating only the instruction set. The image builds; wiring it into the `qemu` stage is the remaining step, and until then the user-mode run is the honest half of the check.
 3. The t0/t1/t2 latency marks and the rolling window, which turn the interval numbers above into a real glass-to-glass budget.
 4. A `GstBufferPool` behind `FrameSource`, so a processor can write output frames without allocating in the frame path. Today the passthrough refs the input buffer instead.

@@ -7,6 +7,8 @@
 
 #include "optronic/hal/register.hpp"
 
+#include <chrono>
+
 namespace optronic::hal::isp {
 
 // clang-format off
@@ -76,9 +78,21 @@ static_assert(ts_lo.offset == 0x034 && ts_hi.offset == 0x038);
 static_assert(shutter.offset == 0x03C && nuc_acc_ctrl.offset == 0x040);
 static_assert(nuc_table_addr.offset == 0x100 && nuc_table_data.offset == 0x104);
 
+// How the modelled block behaves in time. Real hardware makes software wait;
+// a fake that answers instantly hides every missing timeout, so the delays are
+// explicit and a test can lengthen them until they expire.
+struct IspModel {
+  // Wall-clock, not a poll count: a shutter takes as long as it takes however
+  // often software asks, and a poll-count model would let a busy-loop finish
+  // the sequence in microseconds and hide the blind window entirely.
+  std::chrono::milliseconds shutter_move{40};
+  std::chrono::milliseconds nuc_accumulate{120};
+  bool shutter_jams = false; // BUSY never clears - the fault path
+};
+
 // Wires a FakeMmio to behave like the block: reset values, read-only
 // registers, and the side effects that a plain array would not have.
-void install_isp_model(FakeMmio& m);
+void install_isp_model(FakeMmio& m, const IspModel& model = {});
 
 // Power-on BIT of SPEC-04 §5. Returns the first failure rather than a bool, so
 // the health monitor can say which check failed and not merely that one did.

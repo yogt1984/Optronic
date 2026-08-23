@@ -80,7 +80,7 @@ add_subdirectory(modules)
 add_executable(optronic main.cpp)
 target_link_libraries(optronic PRIVATE
   optronic::options optronic::warnings optronic::sanitizers
-  optronic::app optronic::log optronic::hal Threads::Threads)
+  optronic::app optronic::log optronic::hal optronic::sensor Threads::Threads)
 
 # The service builds and runs without GStreamer; it just has no pipeline. That
 # keeps a bare host useful instead of turning a missing laptop dependency into

@@ -8,12 +8,15 @@
 #include "optronic/app/app.hpp"
 #include "optronic/hal/isp_ctrl.hpp"
 #include "optronic/log/logger.hpp"
+#include "optronic/sensor/nuc.hpp"
 
 #include <array>
+#include <atomic>
 #include <charconv>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 #include <optional>
 #include <string_view>
 #include <thread>
@@ -23,8 +26,6 @@
 #endif
 #if OPTRONIC_WITH_TELEMETRY
 #include "optronic/telemetry/publisher.hpp"
-
-#include <functional>
 #endif
 
 namespace {
@@ -40,6 +41,7 @@ struct Options {
   std::uint16_t port = 5600;
   bool stream = false; // default off: a demo should not need a receiver
   bool video = true;   // --no-video: run the service without a pipeline
+  int nuc_after = 0;   // --nuc N: run a NUC N seconds after start (0 = never)
   std::string broker;  // empty = telemetry off
   std::string node = "node1";
   int seconds = 0; // 0 = run until SIGTERM
@@ -91,6 +93,11 @@ bool parse_args(int argc, char** argv, Options& o) {
       o.stream = true;
     } else if (a == "--no-video") {
       o.video = false;
+    } else if (a == "--nuc") {
+      std::uint32_t sec = 0;
+      if (!parse_u32(next(), sec) || sec == 0)
+        return false;
+      o.nuc_after = static_cast<int>(sec);
     } else if (a == "--broker") {
       o.broker = next();
       if (o.broker.empty())
@@ -118,7 +125,7 @@ bool parse_args(int argc, char** argv, Options& o) {
 void usage() {
   std::fputs("usage: optronic [--gain N] [--width N] [--height N] [--fps N]\n"
              "                [--stream] [--host H] [--port P] [--seconds N]\n"
-             "                [--broker HOST] [--node NAME] [--no-video]\n"
+             "                [--broker HOST] [--node NAME] [--no-video] [--nuc N]\n"
              "                [--debug|--quiet]\n"
              "\n"
              "Without --stream the encoded frames are discarded, so the service\n"
@@ -163,7 +170,16 @@ private:
 // satisfy MmioBackend and nothing above this line knows the difference.
 class SensorService final : public app::Component {
 public:
+  // Something that wants to know about events as they happen, rather than by
+  // sampling. A 200 ms NUC is invisible to a 1 Hz telemetry sample, so state
+  // that changes faster than the sample period has to be pushed, not polled
+  // (SPEC-07 §4: the event topic, QoS 1).
+  using EventSink =
+      std::function<void(std::string_view id, std::uint16_t code, std::string_view text)>;
+
   SensorService(log::Logger& logger, const Options& opt) noexcept : logger_(logger), opt_(opt) {}
+
+  void on_event(EventSink sink) { events_ = std::move(sink); }
 
   std::string_view name() const noexcept override { return "sensor"; }
 
@@ -211,11 +227,42 @@ public:
 
   [[nodiscard]] std::uint64_t frame_count() noexcept { return regs_.read(hal::isp::frame_cnt); }
 
+  [[nodiscard]] bool nuc_running() const noexcept { return nuc_.load(std::memory_order_relaxed); }
+
+  // The channel is blind while the shutter is shut, so this is announced
+  // before and after, not only when it finishes (SPEC-06: DEGRADED:NUC).
+  void run_nuc() noexcept {
+    nuc_.store(true, std::memory_order_relaxed);
+    logger_.log(log::Level::warn, "sensor", "NUC started - channel DEGRADED, shutter closing");
+    emit("NUC_STARTED", 0, "shutter closing, channel degraded");
+
+    const auto r = sensor::run_nuc(regs_);
+
+    nuc_.store(false, std::memory_order_relaxed);
+    if (!r) {
+      logger_.log(log::Level::error, "sensor", "NUC failed",
+                  std::array{log::KeyValue::of("code", static_cast<std::int64_t>(r.error().code))});
+      emit("NUC_FAILED", static_cast<std::uint16_t>(r.error().code), r.error().where);
+      return;
+    }
+    logger_.log(log::Level::info, "sensor", "NUC done - channel OK",
+                std::array{log::KeyValue::of("ms", static_cast<std::int64_t>(r->duration.count())),
+                           log::KeyValue::of("mean_offset", r->mean_offset)});
+    emit("NUC_DONE", 0, "channel OK");
+  }
+
 private:
+  void emit(std::string_view id, std::uint16_t code, std::string_view text) noexcept {
+    if (events_)
+      events_(id, code, text);
+  }
+
   log::Logger& logger_;
   const Options& opt_;
+  EventSink events_;
   hal::FakeMmio dev_;
   hal::RegisterFile<hal::FakeMmio> regs_{dev_};
+  std::atomic<bool> nuc_{false};
 };
 
 #if OPTRONIC_WITH_VIDEO
@@ -339,6 +386,11 @@ public:
     return {};
   }
 
+  void publish_event(std::string_view id, std::uint16_t code, std::string_view text) noexcept {
+    if (pub_)
+      pub_->publish_event(id, code, text);
+  }
+
   void stop() noexcept override {
     if (worker_.joinable()) {
       worker_.request_stop();
@@ -399,6 +451,7 @@ int main(int argc, char** argv) {
                                        telemetry::SensorSample s{};
                                        s.gain = sensor.gain();
                                        s.temp_mc = sensor.temperature_mc();
+                                       s.nuc = sensor.nuc_running();
 #if OPTRONIC_WITH_VIDEO
                                        s.frame_cnt = video_service.frames();
 #else
@@ -406,8 +459,15 @@ int main(int argc, char** argv) {
 #endif
                                        return s;
                                      }};
-  if (!opt.broker.empty())
+  if (!opt.broker.empty()) {
     app.add(telemetry_service);
+    // Events are pushed, not sampled: a 200 ms NUC never appears in a 1 Hz
+    // sensor sample, so it goes out on the event topic at QoS 1 instead.
+    sensor.on_event(
+        [&telemetry_service](std::string_view id, std::uint16_t code, std::string_view text) {
+          telemetry_service.publish_event(id, code, text);
+        });
+  }
 #endif
 
   // Installed before start(): a SIGTERM arriving during startup must still be
@@ -425,6 +485,16 @@ int main(int argc, char** argv) {
 
   logger.log(log::Level::info, "main", "service up",
              std::array{log::KeyValue::of("temp_mc", sensor.temperature_mc())});
+
+  std::optional<std::jthread> nuc_timer;
+  if (opt.nuc_after > 0) {
+    nuc_timer.emplace([&sensor, after = opt.nuc_after](std::stop_token stop) {
+      for (int i = 0; i < after * 10 && !stop.stop_requested(); ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds{100});
+      if (!stop.stop_requested())
+        sensor.run_nuc();
+    });
+  }
 
   if (opt.seconds > 0) {
     std::jthread timer{[&app, s = opt.seconds] {

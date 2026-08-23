@@ -26,6 +26,7 @@ enum class Code : std::uint16_t {
   hal_map = 0x0302,
   hal_id_mismatch = 0x0303,
   hal_irq_timeout = 0x0304,
+  hal_shutter = 0x0305,
 
   vid_build = 0x0401,
   vid_state = 0x0402,

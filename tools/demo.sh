@@ -5,7 +5,8 @@
 #   tools/demo.sh warm      once, before the meeting: build so nothing compiles live
 #   tools/demo.sh tests     the suite, host and aarch64            (~30 s)
 #   tools/demo.sh service   the service, MQTT, and a broker outage (~25 s)
-#   tools/demo.sh qemu      the same binary on aarch64             (~40 s)
+#   tools/demo.sh nuc       the NUC shutter sequence, live         (~10 s)
+#   tools/demo.sh qemu      the same binary on aarch64             (~15 s)
 #
 # Each act stops at the end. Run them one at a time and talk in between.
 set -euo pipefail
@@ -58,6 +59,17 @@ service)
        mosquitto -d -p 1883 2>/dev/null || true
        wait $svc; sleep 1; kill $sub 2>/dev/null || true
        pkill mosquitto || true'
+  ;;
+
+nuc)
+  rule "Non-uniformity correction: the channel goes blind for 200 ms"
+  run 'cd /work
+       mosquitto -d -p 1883 2>/dev/null; sleep 1
+       ( mosquitto_sub -v -t "optronic/+/sensor" -t "optronic/+/event" | sed -u "s/^/  [monitor] /" ) &
+       sub=$!
+       ./build-demo/optronic --broker 127.0.0.1 --node sight-01 --nuc 3 --seconds 6 2>&1 |
+         grep --line-buffered -E "NUC|frame seq|PLAYING" | sed -u "s/^/  [service] /"
+       sleep 1; kill $sub 2>/dev/null || true; pkill mosquitto || true'
   ;;
 
 qemu)

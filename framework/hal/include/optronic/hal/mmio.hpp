@@ -38,6 +38,14 @@ public:
       ++faults_;
       return 0;
     }
+    // Reads can have effects on real hardware - a status bit that clears on
+    // read, a shutter that has finished moving since the last poll - so the
+    // fake allows them too. The state is mutable for exactly this reason: the
+    // device changes underneath a const reader, which is the truth.
+    for (const auto& h : read_hooks_) {
+      if (h.offset == off)
+        h.fn(const_cast<FakeMmio&>(*this));
+    }
     return words_[off / 4];
   }
 
@@ -61,6 +69,12 @@ public:
   // whoever models the device, not by the backend.
   void on_write(std::size_t off, std::function<void(FakeMmio&, std::uint32_t)> fn) {
     hooks_.push_back({off, std::move(fn)});
+  }
+
+  // Side effect on read: called before the value is returned, so the hook can
+  // change what the reader is about to see.
+  void on_read(std::size_t off, std::function<void(FakeMmio&)> fn) {
+    read_hooks_.push_back({off, std::move(fn)});
   }
 
   void set_read_only(std::size_t off) {
@@ -95,9 +109,15 @@ private:
     std::function<void(FakeMmio&, std::uint32_t)> fn;
   };
 
+  struct ReadHook {
+    std::size_t offset;
+    std::function<void(FakeMmio&)> fn;
+  };
+
   std::vector<std::uint32_t> words_;
   std::vector<bool> read_only_;
   std::vector<Hook> hooks_;
+  std::vector<ReadHook> read_hooks_;
   mutable std::size_t faults_ = 0;
 };
 
