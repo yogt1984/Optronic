@@ -15,9 +15,9 @@ Ubuntu 24.04, GCC 13.3, GStreamer 1.24.2
 |---|---|---|
 | Configure | < 1 s | `cmake --preset host-debug` |
 | Clean build, 6 jobs | 10 s | `cmake --build --preset host-debug -j6` |
-| Test suite, 22 tests | 1.5 s | `ctest --preset host-debug`; 11 of the 22 need the GStreamer development files and are skipped without them |
+| Test suite, 50 tests | 2 s | `ctest --preset host-debug`; the video and telemetry cases need the GStreamer and mosquitto development files and are skipped without them |
 | Binary size | 39 KB debug, 44 KB release | `optronic`, dynamically linked, not stripped |
-| C++ in tree | 1831 lines | `git ls-files '*.cpp' '*.hpp' \| xargs wc -l` |
+| C++ in tree | 3802 lines | `git ls-files '*.cpp' '*.hpp' \| xargs wc -l` |
 
 ## Video pipeline
 
@@ -60,16 +60,44 @@ a regression.
   is a configuration value precisely so that this can be measured without
   changing code.
 
+## aarch64 under QEMU
+
+The cross-built binaries are run again under `qemu-aarch64-static` against the
+sysroot the cross build linked them to. This is instruction-set emulation, not
+a board: it proves the aarch64 code is correct C++ - alignment, atomics, type
+widths, the things that differ from x86 - and nothing about the hardware.
+
+| Binary | aarch64 cases | Result |
+|---|---|---|
+| `test_core` | 3 | pass |
+| `test_app` | 8 | pass |
+| `test_log` | 11 | pass |
+| `test_hal` | 11 | pass |
+| `test_telemetry` | 5 | pass |
+| `test_video` | 11 | pass |
+| **total** | **49** | **6/6 binaries** |
+
+The service itself also runs emulated, end to end: power-on BIT, GStreamer
+pipeline at 30 fps, and MQTT telemetry to a real broker. Startup is about 20
+seconds under emulation, almost all of it GStreamer scanning its plugin
+registry; the frame path then runs at rate.
+
+What this is not: the PetaLinux QEMU machine that boots the target image with
+the real kernel and device tree. That is a separate stage, and `/dev/uio0`
+- the one thing the HAL ultimately talks to - exists only there and on the
+unit.
+
 ## Correctness
 
 | Check | Result |
 |---|---|
 | `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion -Werror` | 0 warnings |
-| ASan + UBSan, 22 tests, `detect_leaks=1` | 0 findings |
-| TSan, framework tests | 0 findings |
+| ASan + UBSan, 50 tests, `detect_leaks=1` | 0 findings |
+| TSan, 39 tests (framework, telemetry) | 0 findings |
 | TSan, video tests | excluded — see below |
 | clang-format, clang-tidy, dependency rules | clean |
 | aarch64 cross build | `ELF 64-bit LSB pie executable, ARM aarch64` |
+| aarch64 under qemu-user | 49 cases, 6/6 binaries |
 
 ThreadSanitizer is not run against `modules/video`. GLib, GObject and libx264
 are not built with TSan, so the tool cannot see their locks and atomics and
@@ -92,6 +120,7 @@ docker run --rm --security-opt seccomp=unconfined \
   -v "$PWD:/work" -v optronic-ccache:/ccache optronic/debian
 ```
 
-Runs lint, the three host presets and the aarch64 cross build. The pipeline
+Runs lint, the three host presets, the aarch64 cross build and the aarch64
+suite under QEMU. The pipeline
 throughput figures come from a five-second run per configuration against
 `videotestsrc` with the output sink discarded.

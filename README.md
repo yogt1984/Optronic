@@ -20,7 +20,59 @@ or the same thing the CI runs, in the container that carries the toolchain:
 docker run --rm --security-opt seccomp=unconfined -v "$PWD:/work" -v optronic-ccache:/ccache optronic/debian
 ```
 
-which executes lint (clang-format, clang-tidy, dependency rules), the three host presets, and the aarch64 cross build.
+which executes lint (clang-format, clang-tidy, dependency rules), the three
+host presets, the aarch64 cross build, and the cross-built suite again under
+QEMU user-mode emulation - 49 test cases on aarch64, on a laptop with no board
+attached.
+
+There is also a scripted walk-through - `tools/demo.sh warm` once, then
+`tests`, `service` and `qemu` as three separate acts.
+
+The binary is the service itself, not a demo harness:
+
+```
+$ ./build-host-debug/optronic --seconds 5
+INFO  log        sink thread running
+INFO  sensor     power-on BIT passed
+INFO  sensor     running gain=256 w=1280 h=720
+INFO  video      pipeline PLAYING fps=30 stream=0
+INFO  main       service up temp_mc=41250
+INFO  video      frame seq=30 bytes=1382400
+INFO  video      pipeline stopped frames=91 drops=0
+INFO  sensor     stopped
+INFO  log        sink stopping written=10 dropped=0
+```
+
+`--stream --port 5600` sends RTP instead of discarding it; `--help` prints the
+receiver command. SIGTERM brings the components down in reverse order and the
+process exits 0 in well under the two seconds SRS-LC-02 allows - measured at
+686 ms with the pipeline running.
+
+With `--broker` the service also publishes telemetry, and the interesting part
+is what happens when the broker goes away:
+
+```
+$ ./build-host-debug/optronic --broker 127.0.0.1 --node sight-01 --seconds 10
+INFO  telemetry  connected to broker
+WARN  telemetry  publish failed - broker unreachable rc=4     # broker killed at t=3
+INFO  telemetry  connected to broker                          # restarted at t=7, reconnected
+INFO  telemetry  stopped published=10 failed=10
+INFO  video      pipeline stopped frames=301 drops=0          # the pipeline never noticed
+```
+
+One warning rather than one per sample, automatic reconnect with backoff, and
+not a single dropped frame: telemetry observes and never influences
+(SRS-LT-04). A monitor sees
+
+```
+$ mosquitto_sub -v -t 'optronic/#'
+optronic/sight-01/health  {"v":1,"state":"OK","uptime_s":2,"faults":0}
+optronic/sight-01/sensor  {"v":1,"gain":256,"nuc":false,"temp_mc":41250,"frame_cnt":61}
+optronic/sight-01/health  {"v":1,"state":"OFFLINE"}
+```
+
+The last line is the retained last will, so a monitor that connects afterwards
+still learns the unit is gone.
 
 The specifications in `docs/` describe the whole system. The code implements part of it, and this table is the honest split:
 
@@ -32,24 +84,29 @@ The specifications in `docs/` describe the whole system. The code implements par
 | C++23 language level, error model, `expected`, GoogleTest | built |
 | `framework/app` — lifecycle, ordered startup, rollback, signals, watchdog | built |
 | `modules/video` — pipeline, factory, `GstPtr`/`MapGuard`, `Processor` concept | built |
-| `framework/config · log · ipc · hal · health · time` | specified, not implemented |
-| `modules/sensor · telemetry` | specified, not implemented |
+| `framework/log` — 256-byte records, per-thread SPSC rings, sink thread | built |
+| `framework/hal` — typed registers, ISP map, host fake, UIO backend | built |
+| `modules/telemetry` — MQTT over libmosquitto, last will, backoff | built |
+| the service: BIT, sensor, video, telemetry and logging under one lifecycle | built |
+| `qemu` stage: the aarch64 binaries run under user-mode emulation | built |
+| `framework/config · ipc · health · time` | specified, not implemented |
+| `modules/sensor` | specified, not implemented |
 | `tools/nodectl`, QEMU target tests | specified, not implemented |
 
 Twenty-two tests, all green, including the video pipeline running end to end against `videotestsrc`. Eleven of them need the GStreamer development files; a host without them configures, builds and tests everything else and reports the video module as skipped, which is why the container is the reference environment. Clean under ASan/UBSan with leak detection on. ThreadSanitizer covers the framework; the video module is excluded from it deliberately — see `tests/CMakeLists.txt` for why.
 
-The legacy baseline (`v0-legacy`) is still present as `main.cpp` and `README.txt`; it is deleted when the components that replace it land.
+The legacy baseline is gone: `main.cpp` is composition now, and the `volatile` register pointer, the hand-rolled ring and the printf logging it used to contain live in `framework/hal`, `framework/log` and their tests. It remains reachable as the `v0-legacy` tag.
 
 ## What the position asks for, and where this repo answers it
 
 | Role description | Where |
 |---|---|
-| Framework and cross-cutting functions | `framework/` — lifecycle and error model built; configuration, logging, control protocol, hardware abstraction, health/BIT and time specified |
+| Framework and cross-cutting functions | `framework/` — lifecycle, error model, logging and hardware abstraction built; configuration, control protocol, health/BIT and time specified |
 | General software work *outside* GStreamer | everything except `modules/video`; GStreamer headers are confined to that one module and `tools/check_deps.sh` fails the build if that is violated |
 | GStreamer, self-taught | `modules/video` and `docs/19_GSTREAMER_INTERFACES.md` |
-| Xilinx SoC and System-on-Module integration | PetaLinux-SDK cross build in Docker; `framework/hal` (UIO register access with a host fake) specified |
+| Xilinx SoC and System-on-Module integration | `framework/hal` — typed registers, the ISP map of `docs/04`, a host fake with real side effects, and the UIO backend; PetaLinux-SDK cross build in Docker |
 | CMake, Docker, MQTT, embedded work packages, C++20 — "to be built up" | `cmake/`, `docker/`, and the commit history itself |
-| Hardware can only be tested on the real device | `docs/09_TEST_PLAN.md` — what host tests can prove, what only the unit can |
+| Hardware can only be tested on the real device | the `MmioBackend` seam: everything above it is tested on the host against `FakeMmio`, so bench time is spent only on what genuinely needs the unit (`docs/09_TEST_PLAN.md`) |
 | Documentation in English | `docs/` |
 
 ## The interfaces designed around GStreamer
@@ -80,14 +137,20 @@ The central design decision: GStreamer is an implementation detail of one module
 ## Repository layout
 
 ```
+main.cpp     composition: three components, one lifecycle   built
 framework/
   core/      error model, expected                       built
   app/       lifecycle, component order, signals         built
-  config/ log/ ipc/ hal/ health/ time/                   specified
+  log/       fixed records, SPSC rings, sink thread      built
+  hal/       typed registers, ISP map, fake + UIO        built
+  config/ ipc/ health/ time/                             specified
 modules/
   video/     pipeline, factory, processors               built
   sensor/ telemetry/                                     specified
-tests/       core, app, video — 22 host tests            built
+modules/
+  telemetry/ MQTT publisher, last will, backoff        built
+tests/       core, app, log, hal, video, telemetry     built
+             50 host cases, 49 of them also on aarch64
 tools/       check_deps.sh, format.sh                    built
 cmake/       toolchain file, sanitizer selection         built
 docker/      PetaLinux SDK image, Debian fallback, CI    built
@@ -122,19 +185,25 @@ The repository starts from a deliberately legacy baseline and moves toward the t
 |---|---|---|
 | Build | flat Makefile | CMake targets, presets, aarch64 toolchain file |
 | Standard | C++14 | C++23 (`expected`, `jthread`, concepts) |
-| Memory | raw `new`/`delete`, `volatile` register pointer | RAII throughout, `GstPtr`/`MapGuard` over the C API |
+| Structure | one 400-line `main.cpp` | 322 lines of composition over five libraries |
+| Memory | raw `new`/`delete`, `volatile` register pointer | RAII throughout; `volatile` confined to the UIO backend |
+| Registers | `uint32_t*` and offsets by hand | typed registers; writing a read-only one will not compile |
 | Errors | return codes and `printf` | `expected<T, Error>` with the SPEC-06 code space |
-| Tests | none | 22 host tests, ASan/UBSan and TSan presets |
+| Logging | `printf` from the frame path | fixed 256-byte records, lock-free ring, sink thread, 0 allocations |
+| Shutdown | none | ordered, reverse, rollback on failure, 686 ms on SIGTERM |
+| Tests | none | 45 host tests, clean under ASan/UBSan and TSan |
 | Reproducibility | works on my machine | one container, laptop and CI identical |
+
+`git diff --stat v0-legacy..HEAD` is 59 files, +4373/-461.
 
 C++23 rather than C++20 for exactly one reason: `std::expected` is C++23. The rest of the code stays inside the C++20 subset of `docs/11_CODING_GUIDELINES.md`, and the language level is a property of one CMake target, not a global flag.
 
 ## What I would do next
 
-1. A `GstBufferPool` behind `FrameSource`, so a processor can write output frames without allocating in the frame path. Today the passthrough refs the input buffer instead.
-2. The t0/t1/t2 latency marks and the rolling window, which turns the interval numbers above into a real glass-to-glass budget.
-3. `framework/log` — the SPSC ring and sink thread, because every component after this one needs it before it needs anything else.
-4. `framework/hal` with the `MmioBackend` concept and a host fake, then `modules/sensor` on top of it.
-5. `modules/telemetry` over MQTT: it observes and never influences, so a broker outage cannot move the health state.
+1. `modules/sensor` — the NUC shutter sequence of `docs/04 §3.1`, which is the one optronics-specific procedure every thermal channel has. The HAL and its fake already model the shutter and the accumulator, so it can be written and tested before any hardware exists.
+2. The PetaLinux QEMU machine, which boots the actual target image instead of emulating only the instruction set. The image builds; wiring it into the `qemu` stage is the remaining step, and until then the user-mode run is the honest half of the check.
+3. The t0/t1/t2 latency marks and the rolling window, which turn the interval numbers above into a real glass-to-glass budget.
+4. A `GstBufferPool` behind `FrameSource`, so a processor can write output frames without allocating in the frame path. Today the passthrough refs the input buffer instead.
+5. `framework/config` — the JSON store and schema, replacing the command-line flags the service currently takes.
 
-The order is deliberate: the things that everything else depends on come first, and the demonstrable feature comes last.
+The order is deliberate: what everything else depends on comes first, and the demonstrable feature comes last.

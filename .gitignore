@@ -13,3 +13,7 @@ compile_commands.json
 models/*.onnx
 bsp/
 optronic-aarch64.tar.gz
+
+# demo scratch
+.gst-registry-*.bin
+build-demo*/
