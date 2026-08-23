@@ -1,22 +1,24 @@
-#include <gtest/gtest.h>
-
 #include "optronic/core/expected.hpp"
+
+#include <gtest/gtest.h>
 
 using namespace optronic;
 
 namespace {
 
 expected<int> parse_gain(int raw) {
-  if (raw < 0 || raw > 4095) return fail(Code::cfg_range, "parse_gain");
+  if (raw < 0 || raw > 4095)
+    return fail(Code::cfg_range, "parse_gain");
   return raw;
 }
 
 expected<int> apply_gain(int gain) {
-  if (gain == 0) return fail(Code::not_ready, "apply_gain");
+  if (gain == 0)
+    return fail(Code::not_ready, "apply_gain");
   return gain * 2;
 }
 
-}  // namespace
+} // namespace
 
 TEST(Error, DomainIsEncodedInTheCode) {
   EXPECT_EQ(domain_of(Code::cfg_range), 0x0200u);
@@ -32,7 +34,7 @@ TEST(Expected, PropagatesThroughTwoLayers) {
   auto bad = parse_gain(9999).and_then(apply_gain);
   ASSERT_FALSE(bad);
   EXPECT_EQ(bad.error().code, Code::cfg_range);
-  EXPECT_EQ(bad.error().where, "parse_gain");  // the inner frame, not the outer
+  EXPECT_EQ(bad.error().where, "parse_gain"); // the inner frame, not the outer
 }
 
 TEST(Expected, TransformKeepsTheError) {
