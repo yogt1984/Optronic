@@ -2,7 +2,7 @@
 
 [![ci](https://github.com/yogt1984/Optronic/actions/workflows/ci.yml/badge.svg)](https://github.com/yogt1984/Optronic/actions/workflows/ci.yml)
 
-A small Linux service that models the software of an electro-optical sensor node - the kind of unit that sits in a drone's camera payload or a 360° situational-awareness system.
+A small Linux service that models the camera processing and telemetry software of an autonomous platform - the kind of unit that streams camera data through a processing pipeline, runs onboard object detection, and reports state and detections to the rest of the system, the way a drone's payload computer feeds its operating system and ground segment.
 
 Plug in a USB camera, run two commands, and it detects objects live: boxes drawn into the frame inside the pipeline, the video encoded to H.264 and streamed as RTP, and every object's label, confidence and pixel position published over MQTT. Inference runs on its own thread, so the video keeps full frame rate while the detector works at its own pace.
 
