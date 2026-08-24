@@ -2,7 +2,7 @@
 
 [![ci](https://github.com/yogt1984/Optronic/actions/workflows/ci.yml/badge.svg)](https://github.com/yogt1984/Optronic/actions/workflows/ci.yml)
 
-A small Linux service that models the software of an electro-optical sensor node — the kind of unit that sits in a vehicle sight or a 360° situational-awareness system: detectors in, processed and encoded video out, a control link, health reporting, telemetry. Target class: Xilinx Zynq UltraScale+ MPSoC on a System-on-Module; everything is also buildable and testable on a PC.
+A small Linux service that models the software of an electro-optical sensor node — the kind of unit that sits in a vehicle sight or a 360° situational-awareness system: detectors in, processed and encoded video out, a control link, health reporting, telemetry. It is written **for** a Xilinx Zynq UltraScale+ MPSoC on a System-on-Module - aarch64 under Linux, an AXI4-Lite register block in the programmable logic reached through UIO, hardware or software H.264 - and it has **never run on one**. Everything here builds and runs on a PC; the aarch64 binaries are exercised under emulation. `docs/NUMBERS.md` says exactly what is measured and what is not.
 
 ## Quickstart
 
@@ -43,11 +43,11 @@ tools/cameras.sh --probe       # which /dev/video* actually delivers frames
 | Telemetry | MQTT via libmosquitto 2.0 |
 | Tests | GoogleTest, CTest, 67 cases; ASan, UBSan and ThreadSanitizer presets |
 | Static analysis | clang-format and clang-tidy 17, plus a dependency-boundary check |
-| Containers | Docker - a Debian build image, a PetaLinux tools image, a PetaLinux SDK image |
+| Containers | Docker - a Debian build image (used for everything here), a PetaLinux tools image (works), a PetaLinux SDK image (Dockerfile complete, the build has not finished) |
 | Cross build | aarch64 against a Debian sysroot; PetaLinux 2024.1 / Yocto where the SDK is available |
 | Target emulation | QEMU user-mode - the whole suite re-run on aarch64 |
 | CI | GitHub Actions: image, lint, three host presets, cross, QEMU |
-| Target class | Xilinx Zynq UltraScale+ MPSoC - A53 under Linux, AXI4-Lite registers over UIO, VCU or software encode |
+| Target class | written for Xilinx Zynq UltraScale+ MPSoC - A53 under Linux, AXI4-Lite over UIO, VCU or software encode. **No Zynq hardware was involved**: the register map is inferred, and the UIO path has only ever run against a host fake |
 
 ## Why this repository exists
 
@@ -206,7 +206,9 @@ The specifications in `docs/` describe the whole system. The code implements par
 |---|---|
 | `docs/` SPEC-00 … SPEC-19 | written |
 | CMake targets, presets, aarch64 toolchain file | built |
-| Docker images (PetaLinux SDK, Debian fallback), GitHub Actions | built |
+| Docker build image and GitHub Actions | built |
+| PetaLinux tools image (from the licensed installer and the ZCU104 BSP) | built |
+| PetaLinux SDK image | Dockerfile complete, build unfinished |
 | C++23 language level, error model, `expected`, GoogleTest | built |
 | `framework/app` — lifecycle, ordered startup, rollback, signals, watchdog | built |
 | `modules/video` — pipeline, factory, `GstPtr`/`MapGuard`, `Processor` concept | built |
@@ -288,7 +290,9 @@ tests/       core, app, log, hal, video, telemetry,
              sensor - 57 host cases, all also on aarch64  built
 tools/       check_deps.sh, format.sh                    built
 cmake/       toolchain file, sanitizer selection         built
-docker/      PetaLinux SDK image, Debian fallback, CI    built
+docker/      Debian build image, CI                     built
+             PetaLinux tools image                       built
+             PetaLinux SDK image                         incomplete
 docs/        SPEC-00 … SPEC-19                           written
 ```
 
@@ -345,7 +349,7 @@ template backtrace.
 ## What I would do next
 
 1. `framework/health` — the INIT/OK/DEGRADED/FAULT machine of `docs/06`. The NUC already emits the events it would consume; today they go to the log and to MQTT, but nothing owns the state.
-2. The PetaLinux QEMU machine, which boots the actual target image instead of emulating only the instruction set. The image builds; wiring it into the `qemu` stage is the remaining step, and until then the user-mode run is the honest half of the check.
+2. The PetaLinux QEMU machine, which boots the actual target image instead of emulating only the instruction set. The tools image works and a full Yocto build ran through all 8051 tasks, but the SDK never came out packaged - the last attempt died on a transient fetch error. Until it does, the user-mode run is the honest half of the check.
 3. The t0/t1/t2 latency marks and the rolling window, which turn the interval numbers above into a real glass-to-glass budget - the detector makes this concrete, since inference is 110-170 ms against a 33 ms frame period.
 4. A `GstBufferPool` behind `FrameSource`, so a processor can write output frames without allocating in the frame path. Today the passthrough refs the input buffer instead.
 5. `framework/config` — the JSON store and schema, replacing the command-line flags the service currently takes.
