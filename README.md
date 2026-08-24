@@ -4,6 +4,51 @@
 
 A small Linux service that models the software of an electro-optical sensor node — the kind of unit that sits in a vehicle sight or a 360° situational-awareness system: detectors in, processed and encoded video out, a control link, health reporting, telemetry. Target class: Xilinx Zynq UltraScale+ MPSoC on a System-on-Module; everything is also buildable and testable on a PC.
 
+## Quickstart
+
+Debian or Ubuntu, a USB camera, and nothing else installed:
+
+```bash
+git clone https://github.com/yogt1984/Optronic.git && cd Optronic
+./install.sh     # host packages, container image, detection model  (once)
+./run.sh         # camera check, then the live detector
+```
+
+`install.sh` puts only what cannot live in a container on the host - Docker,
+and the GStreamer decoder and sink that put the stream on screen. The compiler,
+GStreamer development files, OpenCV and mosquitto stay inside the image, so the
+build is the same on a laptop and in CI. It is safe to run twice; every step
+checks before it acts.
+
+`run.sh` probes each camera by grabbing a real frame from it, then streams the
+chosen one through the detector: boxes drawn inside the frame path, the objects
+published over MQTT, and a video window. Ctrl-C stops everything.
+
+Then, at your own pace:
+
+```bash
+tools/test.sh                  # the suite, in the container
+tools/demo.sh                  # the individual demo acts
+tools/cameras.sh --probe       # which /dev/video* actually delivers frames
+```
+
+## Tech stack
+
+| | |
+|---|---|
+| Language | C++23 (`std::expected`, `jthread`/`stop_token`, concepts, `<=>`), GCC 13 |
+| Build | CMake 3.25 with presets, Ninja, ccache, an aarch64 toolchain file |
+| Video | GStreamer 1.24 - `appsink`/`appsrc`, `x264enc`, RTP over UDP |
+| Detection | OpenCV 4.6 DNN, YOLOv5s (ONNX) and YOLOv4-tiny (darknet) |
+| Telemetry | MQTT via libmosquitto 2.0 |
+| Tests | GoogleTest, CTest, 67 cases; ASan, UBSan and ThreadSanitizer presets |
+| Static analysis | clang-format and clang-tidy 17, plus a dependency-boundary check |
+| Containers | Docker - a Debian build image, a PetaLinux tools image, a PetaLinux SDK image |
+| Cross build | aarch64 against a Debian sysroot; PetaLinux 2024.1 / Yocto where the SDK is available |
+| Target emulation | QEMU user-mode - the whole suite re-run on aarch64 |
+| CI | GitHub Actions: image, lint, three host presets, cross, QEMU |
+| Target class | Xilinx Zynq UltraScale+ MPSoC - A53 under Linux, AXI4-Lite registers over UIO, VCU or software encode |
+
 ## Why this repository exists
 
 This repository was prepared by **Yiğit Onat** for the interview with **HENSOLDT Optronics** (via FERCHAU) on 26 August 2026 for the position *Senior C++ Developer / Embedded, Linux, Xilinx SoC, GStreamer*. It is stated openly: the purpose is to demonstrate an understanding of the software architecture, its constraints, and the tasks the position describes — before having seen the actual system.
@@ -223,7 +268,9 @@ The central design decision: GStreamer is an implementation detail of one module
 ## Repository layout
 
 ```
-main.cpp     composition: three components, one lifecycle   built
+install.sh   one-time setup on Debian or Ubuntu              built
+run.sh       camera check, then the live detector             built
+main.cpp     composition: components under one lifecycle      built
 framework/
   core/      error model, expected                       built
   app/       lifecycle, component order, signals         built
