@@ -2,7 +2,9 @@
 
 [![ci](https://github.com/yogt1984/Optronic/actions/workflows/ci.yml/badge.svg)](https://github.com/yogt1984/Optronic/actions/workflows/ci.yml)
 
-A small Linux service that models the software of an electro-optical sensor node — the kind of unit that sits in a vehicle sight or a 360° situational-awareness system: detectors in, processed and encoded video out, a control link, health reporting, telemetry. It is written **for** a Xilinx Zynq UltraScale+ MPSoC on a System-on-Module - aarch64 under Linux, an AXI4-Lite register block in the programmable logic reached through UIO, hardware or software H.264 - and it has **never run on one**. Everything here builds and runs on a PC; the aarch64 binaries are exercised under emulation. `docs/NUMBERS.md` says exactly what is measured and what is not.
+A small Linux service that models the software of an electro-optical sensor node - the kind of unit that sits in a vehicle sight or a 360° situational-awareness system. What it does today: takes frames from a camera or a test pattern, hands them to C++ on the streaming thread, optionally runs object detection over them, encodes to H.264 and sends it as RTP, drives a register block through a hardware abstraction layer, runs the shutter sequence a thermal channel needs, and reports state and detections over MQTT. What it does not: there is no control link and no health state machine - both are specified in `docs/` and not implemented, and the `health` topic reports a fixed `OK`.
+
+It is written **for** a Xilinx Zynq UltraScale+ MPSoC on a System-on-Module - aarch64 under Linux, an AXI4-Lite register block in the programmable logic reached through UIO, software H.264 here and the VCU on the target - and it has **never run on one**. Everything here builds and runs on a PC; the aarch64 binaries are exercised under emulation. `docs/NUMBERS.md` says exactly what is measured and what is not.
 
 ## Quickstart
 
@@ -109,7 +111,7 @@ frames** - telemetry observes and never influences.
 | camera input, QEMU stage, the service wiring it all together | built |
 | PetaLinux tools image (licensed installer + ZCU104 BSP) | built |
 | PetaLinux SDK image | Dockerfile complete, build unfinished |
-| `framework/config · ipc · health · time`, `tools/nodectl` | specified, not implemented |
+| `framework/config · ipc · health · time`, `tools/nodectl` | specified, not implemented - so no control link, and the `health` topic reports a fixed `OK` |
 
 67 tests, **all of them also on aarch64** under emulation. Clean under
 ASan/UBSan with leak detection and under ThreadSanitizer. Numbers and their
