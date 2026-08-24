@@ -38,13 +38,20 @@ struct YoloConfig {
   std::string weights = "models/yolov5s.onnx";
   std::string config = "models/yolov4-tiny.cfg"; // darknet only
   std::string names = "models/coco.names";
+  // The network's input, not the camera's. Inference cost scales with this
+  // and barely at all with capture resolution, so this is the knob that makes
+  // the detector quicker - at the price of missing small or distant objects.
   int input_size = 640;
   float confidence_threshold = 0.4F;
   float nms_threshold = 0.4F;
-  // Frames between inferences. Zero means work it out: the stage times itself
-  // and skips however many frames its own latency costs, which is the only
-  // honest answer when the same code runs a 110 ms model on a laptop and a
-  // 5 ms accelerator on the target.
+  // Inference on its own thread, with a one-slot mailbox: the streaming thread
+  // copies the luma plane in, draws the boxes it already has, and returns.
+  // Running inference inline blocks capture for its whole duration - at 300 ms
+  // against a 33 ms frame period that is a visible stall every few frames
+  // (SPEC-19 §4).
+  bool async = true;
+
+  // Only used when async is off. Zero means work it out from measured latency.
   int detect_every = 0;
   std::chrono::microseconds frame_period{33'333}; // 30 fps
   // OpenCV's pool competes with the pipeline's threads and buys almost nothing

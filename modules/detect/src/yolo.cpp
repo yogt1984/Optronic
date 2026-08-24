@@ -2,11 +2,14 @@
 
 #include <algorithm>
 #include <atomic>
+#include <condition_variable>
+#include <cstring>
 #include <fstream>
 #include <mutex>
 #include <opencv2/core.hpp>
 #include <opencv2/dnn.hpp>
 #include <opencv2/imgproc.hpp>
+#include <thread>
 
 namespace optronic::detect {
 namespace {
@@ -46,6 +49,11 @@ class Yolo::Impl {
 public:
   explicit Impl(YoloConfig cfg) : cfg_(std::move(cfg)) {}
 
+  ~Impl() { stop_worker(); }
+
+  Impl(const Impl&) = delete;
+  Impl& operator=(const Impl&) = delete;
+
   static Format format_of(const std::string& path) {
     return path.size() > 5 && path.compare(path.size() - 5, 5, ".onnx") == 0 ? Format::onnx
                                                                              : Format::darknet;
@@ -64,7 +72,8 @@ public:
       } else if (ext != std::string::npos) {
         cfg_.config = cfg_.weights.substr(0, ext) + ".cfg";
       }
-      cfg_.input_size = 416; // what tiny-yolo was trained at
+      if (cfg_.input_size == YoloConfig{}.input_size)
+        cfg_.input_size = 416; // what tiny-yolo was trained at, unless asked otherwise
     }
 
     std::ifstream names{cfg_.names};
@@ -113,8 +122,11 @@ public:
 
     const auto w = static_cast<int>(in.width);
     const auto h = static_cast<int>(in.height);
+    ++frame_;
 
-    if (++frame_ % static_cast<std::uint64_t>(stride()) == 0) {
+    if (cfg_.async) {
+      offer(in, w, h);
+    } else if (frame_ % static_cast<std::uint64_t>(stride()) == 0) {
       detect(in, w, h);
     }
 
@@ -227,6 +239,73 @@ public:
     }
   }
 
+  // Streaming thread. Copies the luma plane into the mailbox and returns; if
+  // the worker is still busy the frame is simply not offered, which is what
+  // one slot means - always the newest, never a queue that grows.
+  void offer(const video::FrameView& in, int w, int h) noexcept {
+    if (!worker_.joinable())
+      start_worker();
+
+    const std::size_t need = static_cast<std::size_t>(w) * static_cast<std::size_t>(h);
+    const std::unique_lock lock{mailbox_mutex_, std::try_to_lock};
+    if (!lock.owns_lock() || pending_)
+      return; // worker still has the last one
+
+    if (mailbox_.size() != need)
+      mailbox_.resize(need); // once, then never again for this geometry
+    const std::size_t stride = in.stride != 0 ? in.stride : static_cast<std::size_t>(w);
+    for (int row = 0; row < h; ++row) {
+      const auto* src = in.data.data() + static_cast<std::size_t>(row) * stride;
+      std::memcpy(mailbox_.data() + static_cast<std::size_t>(row) * static_cast<std::size_t>(w),
+                  src, static_cast<std::size_t>(w));
+    }
+    mailbox_w_ = w;
+    mailbox_h_ = h;
+    pending_ = true;
+    mailbox_cv_.notify_one();
+  }
+
+  void start_worker() {
+    worker_ = std::jthread{[this](std::stop_token stop) {
+      std::vector<std::byte> frame;
+      int w = 0, h = 0;
+      while (!stop.stop_requested()) {
+        {
+          std::unique_lock lock{mailbox_mutex_};
+          mailbox_cv_.wait_for(lock, std::chrono::milliseconds{100},
+                               [&] { return pending_ || stop.stop_requested(); });
+          if (stop.stop_requested())
+            return;
+          if (!pending_)
+            continue;
+          frame = mailbox_;
+          w = mailbox_w_;
+          h = mailbox_h_;
+        }
+
+        video::FrameView v{};
+        v.data = frame;
+        v.width = static_cast<std::uint32_t>(w);
+        v.height = static_cast<std::uint32_t>(h);
+        v.stride = static_cast<std::uint32_t>(w);
+        detect(v, w, h);
+
+        {
+          const std::scoped_lock lock{mailbox_mutex_};
+          pending_ = false;
+        }
+      }
+    }};
+  }
+
+  void stop_worker() noexcept {
+    if (!worker_.joinable())
+      return;
+    worker_.request_stop();
+    mailbox_cv_.notify_all();
+    worker_.join();
+  }
+
   [[nodiscard]] std::vector<Detection> last() const {
     const std::scoped_lock lock{mutex_};
     return last_;
@@ -263,6 +342,14 @@ private:
 
   mutable std::mutex mutex_;
   std::vector<Detection> last_;
+
+  // The one-slot mailbox between the streaming thread and the worker.
+  std::mutex mailbox_mutex_;
+  std::condition_variable mailbox_cv_;
+  std::vector<std::byte> mailbox_;
+  int mailbox_w_ = 0, mailbox_h_ = 0;
+  bool pending_ = false;
+  std::jthread worker_;
   std::atomic<std::int64_t> inference_us_{0};
   std::uint64_t frame_ = 0;
 };

@@ -8,9 +8,11 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <thread>
 #include <vector>
 
 using namespace optronic;
@@ -123,7 +125,12 @@ TEST(Yolo, DrawsBoxesIntoTheCallersBuffer) {
   constexpr std::uint32_t w = 768, h = 576; // the reference image geometry
   ASSERT_EQ(pixels.size(), static_cast<std::size_t>(w) * h);
 
-  auto y = detect::Yolo::create();
+  // Synchronous on purpose: this test is about the drawing, and inference on
+  // a worker would make "has it finished yet" part of the assertion.
+  detect::YoloConfig cfg;
+  cfg.async = false;
+  cfg.detect_every = 1;
+  auto y = detect::Yolo::create(cfg);
   ASSERT_TRUE(y);
 
   const auto before = pixels;
@@ -134,8 +141,8 @@ TEST(Yolo, DrawsBoxesIntoTheCallersBuffer) {
   out.height = h;
   out.stride = w;
 
-  // detect_every is 3, so run enough frames for one inference plus a draw.
-  for (int i = 0; i < 4; ++i)
+  // Two frames: the first detects, the second draws what it found.
+  for (int i = 0; i < 2; ++i)
     EXPECT_EQ(y->process(in, out), video::ProcessResult::kept);
 
   EXPECT_FALSE(y->last().empty()) << "the reference scene should contain objects";
@@ -145,4 +152,49 @@ TEST(Yolo, DrawsBoxesIntoTheCallersBuffer) {
       std::count_if(pixels.begin(), pixels.end(),
                     [&, i = std::size_t{0}](std::byte b) mutable { return b != before[i++]; }));
   EXPECT_GT(changed, 100u) << "only " << changed << " pixels changed - boxes look wrong";
+}
+
+// The async path is the one the service actually uses: the streaming thread
+// must return promptly and pick the boxes up on a later frame.
+TEST(Yolo, AsyncInferenceDoesNotBlockTheCaller) {
+  if (!model_present())
+    GTEST_SKIP() << "no model - run tools/get_model.sh";
+  if (!std::filesystem::exists("tests/detect/scene.gray"))
+    GTEST_SKIP() << "no reference scene - see tests/detect/README.md";
+
+  std::ifstream f{"tests/detect/scene.gray", std::ios::binary};
+  ASSERT_TRUE(f);
+  const std::vector<char> raw{std::istreambuf_iterator<char>{f}, {}};
+  std::vector<std::byte> pixels(raw.size());
+  std::transform(raw.begin(), raw.end(), pixels.begin(),
+                 [](char c) { return static_cast<std::byte>(static_cast<unsigned char>(c)); });
+
+  constexpr std::uint32_t w = 768, h = 576;
+  detect::YoloConfig cfg;
+  cfg.async = true;
+  auto y = detect::Yolo::create(cfg);
+  ASSERT_TRUE(y);
+
+  const video::FrameView in = view_of(pixels, w, h);
+  video::WritableFrame out{};
+  out.data = pixels;
+  out.width = w;
+  out.height = h;
+  out.stride = w;
+
+  // Each call must cost far less than an inference - that is the whole point.
+  const auto t0 = std::chrono::steady_clock::now();
+  for (int i = 0; i < 5; ++i)
+    EXPECT_EQ(y->process(in, out), video::ProcessResult::kept);
+  const auto per_call =
+      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0) /
+      5;
+  EXPECT_LT(per_call.count(), 50) << "the streaming thread waited on inference";
+
+  // The worker gets there in its own time.
+  for (int i = 0; i < 100 && y->last().empty(); ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds{50});
+    (void)y->process(in, out);
+  }
+  EXPECT_FALSE(y->last().empty()) << "the worker never produced a result";
 }

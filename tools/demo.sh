@@ -111,6 +111,8 @@ detect)
 
   rule "Camera through the detector: boxes drawn inside the frame path"
   echo "  using $cam ($("$HERE/tools/cameras.sh" | awk -v d="$cam" '$1==d{$1="";print $0}' | xargs))"
+  echo "  yolov4-tiny at 320: ~190 ms, boxes keep up. yolov5s is more accurate"
+  echo "  and five times slower - --model models/yolov5s.onnx if you want it."
   echo "  point the camera at yourself, a chair, a cup - COCO classes."
   echo "  Ctrl-C to stop."
   echo
@@ -122,7 +124,8 @@ detect)
           -v "$HERE:/work" --entrypoint bash "$DETECT_IMAGE" -c '
             mosquitto -d -p 1883 2>/dev/null; sleep 1
             exec /work/build-cv/optronic --camera --device '"$cam"' --width 640 --height 480 \
-              --detect --stream --host 127.0.0.1 --port 5600 \
+              --detect --model models/yolov4-tiny.cfg --input-size 320 \
+              --stream --host 127.0.0.1 --port 5600 \
               --broker 127.0.0.1 --node sight-01')
 
   gst-launch-1.0 -q udpsrc port=5600 caps="application/x-rtp,media=video,encoding-name=H264,payload=96" \

@@ -47,11 +47,13 @@ struct Options {
   bool video = true;   // --no-video: run the service without a pipeline
   bool camera = false; // --camera: v4l2 instead of the generated test pattern
   std::string device = "/dev/video0";
-  std::uint32_t pattern = 0; // videotestsrc pattern; 18 is a moving ball
-  bool detect = false;       // --detect: run the YOLO stage over each frame
-  std::string model;         // --model: overrides the default weights
-  int nuc_after = 0;         // --nuc N: run a NUC N seconds after start (0 = never)
-  std::string broker;        // empty = telemetry off
+  std::uint32_t pattern = 0;    // videotestsrc pattern; 18 is a moving ball
+  bool detect = false;          // --detect: run the YOLO stage over each frame
+  std::string model;            // --model: overrides the default weights
+  std::uint32_t input_size = 0; // --input-size: the network input, 0 = model default
+  bool detect_sync = false;     // --detect-sync: inference on the streaming thread
+  int nuc_after = 0;            // --nuc N: run a NUC N seconds after start (0 = never)
+  std::string broker;           // empty = telemetry off
   std::string node = "node1";
   int seconds = 0; // 0 = run until SIGTERM
   log::Level level = log::Level::info;
@@ -106,6 +108,13 @@ bool parse_args(int argc, char** argv, Options& o) {
       o.camera = true;
     } else if (a == "--detect") {
       o.detect = true;
+    } else if (a == "--input-size") {
+      if (!parse_u32(next(), o.input_size) || o.input_size < 96 || o.input_size > 1280)
+        return false;
+      o.detect = true;
+    } else if (a == "--detect-sync") {
+      o.detect_sync = true;
+      o.detect = true;
     } else if (a == "--model") {
       o.model = next();
       if (o.model.empty())
@@ -154,6 +163,7 @@ void usage() {
              "                [--broker HOST] [--node NAME] [--no-video] [--nuc N]\n"
              "                [--camera] [--device /dev/videoN] [--pattern N]\n"
              "                [--detect] [--model models/yolov5s.onnx]\n"
+             "                [--input-size N] [--detect-sync]\n"
              "                [--debug|--quiet]\n"
              "\n"
              "Without --stream the encoded frames are discarded, so the service\n"
@@ -333,6 +343,9 @@ public:
       if (!opt_.model.empty())
         ycfg.weights = opt_.model;
       ycfg.frame_period = std::chrono::microseconds{1'000'000 / opt_.fps};
+      if (opt_.input_size != 0)
+        ycfg.input_size = static_cast<int>(opt_.input_size);
+      ycfg.async = !opt_.detect_sync;
       auto y = detect::Yolo::create(ycfg);
       if (!y) {
         logger_.log(log::Level::error, "detect", "model not loaded - run tools/get_model.sh");
