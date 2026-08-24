@@ -112,9 +112,25 @@ GStreamer type at all. Detection runs on the luma plane directly - an NV12 Y
 plane is already a valid greyscale image, so a full-frame colour conversion per
 inference is avoided.
 
-`every=35` is not a constant. The stage times itself and skips however many
-frames its own latency costs, so a slow model degrades the detection rate
-rather than the frame rate:
+Inference runs on **its own thread**, behind a one-slot mailbox: the streaming
+thread copies the luma plane in, draws the boxes it already has, and returns.
+Running it inline blocks capture for its whole duration, which is measurable -
+over twelve seconds at 30 fps, against the same camera and model:
+
+| | frames delivered |
+|---|---|
+| inference on the streaming thread (`--detect-sync`) | 220 (18 fps) |
+| inference on a worker (default) | **361 (30 fps)** |
+
+Nothing is dropped in either case; in the first the source is simply held back,
+which on screen is a stutter every few frames.
+
+The network input is the knob that costs time, not the camera resolution -
+`--input-size` on yolov4-tiny: 224 → 80 ms, 320 → 191 ms, 416 → 318 ms.
+
+`every=35` applies only with `--detect-sync`. There the stage times itself and
+skips however many frames its own latency costs, so a slow model degrades the
+detection rate rather than the frame rate:
 
 | Model | Inference | Skips | Note |
 |---|---|---|---|
