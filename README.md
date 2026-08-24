@@ -2,7 +2,7 @@
 
 [![ci](https://github.com/yogt1984/Optronic/actions/workflows/ci.yml/badge.svg)](https://github.com/yogt1984/Optronic/actions/workflows/ci.yml)
 
-A small Linux service that models the software of an electro-optical sensor node - the kind of unit that sits in a vehicle sight or a 360° situational-awareness system.
+A small Linux service that models the software of an electro-optical sensor node - the kind of unit that sits in a drone's camera payload or a 360° situational-awareness system.
 
 Plug in a USB camera, run two commands, and it detects objects live: boxes drawn into the frame inside the pipeline, the video encoded to H.264 and streamed as RTP, and every object's label, confidence and pixel position published over MQTT. Inference runs on its own thread, so the video keeps full frame rate while the detector works at its own pace.
 
@@ -57,9 +57,9 @@ tools/cameras.sh --probe       # which /dev/video* actually delivers frames
 
 ## Why this repository exists
 
-This repository was prepared by **Yiğit Onat** for the interview with **HENSOLDT Optronics** (via FERCHAU) on 26 August 2026 for the position *Senior C++ Developer / Embedded, Linux, Xilinx SoC, GStreamer*. It is stated openly: the purpose is to demonstrate an understanding of the software architecture, its constraints, and the tasks the position describes — before having seen the actual system.
+This repository was prepared by **Yiğit Onat** for the interview with **Auterion** on 25 August 2026 for the position *Embedded Software Engineer (Camera & Driver Platform)*. It is stated openly: the purpose is to demonstrate an understanding of the software architecture, its constraints, and the tasks the position describes — before having seen the actual system.
 
-Everything about the real product is therefore **an inference from the role description and the public product line**, not knowledge of HENSOLDT internals. Where a spec depends on such an assumption it says so, and the open questions are listed in `docs/00_SYSTEM_CONTEXT.md`.
+Everything about the real product is therefore **an inference from the role description and the public product line**, not knowledge of AuterionOS internals. Where a spec depends on such an assumption it says so, and the open questions are listed in `docs/00_SYSTEM_CONTEXT.md`.
 
 ## What runs today
 
@@ -126,15 +126,14 @@ caveats: `docs/NUMBERS.md`.
 
 | Role description | Where |
 |---|---|
-| Framework and cross-cutting functions | `framework/` — lifecycle, error model, logging and hardware abstraction built; configuration, control protocol, health/BIT and time specified |
-| MQTT | `modules/telemetry` — retained last will, backoff reconnect, and publish failures that never move the health state |
-| Embedded work packages | `modules/sensor` — the NUC shutter sequence of `docs/04 §3.1`, written and tested against a host fake before any hardware exists |
-| General software work *outside* GStreamer | everything except `modules/video`; GStreamer headers are confined to that one module and `tools/check_deps.sh` fails the build if that is violated |
-| GStreamer, self-taught | `modules/video` and `docs/19_GSTREAMER_INTERFACES.md` |
-| Xilinx SoC and System-on-Module integration | `framework/hal` — typed registers, the ISP map of `docs/04_HAL_REGISTER_MAP.md`, a host fake with real side effects, and the UIO backend; PetaLinux-SDK cross build in Docker |
-| CMake, Docker, MQTT, embedded work packages, C++20 — "to be built up" | `cmake/`, `docker/`, and the commit history itself |
-| Hardware can only be tested on the real device | the `MmioBackend` seam: everything above it is tested on the host against `FakeMmio`, so bench time is spent only on what genuinely needs the unit (`docs/09_TEST_PLAN.md`) |
-| Documentation in English | `docs/` |
+| Camera data pipelines — streaming, sync, pipeline architecture | `modules/video` — `appsink`/`appsrc` pipeline, H.264 encode, RTP streaming; processors decoupled from transport (`docs/19_GSTREAMER_INTERFACES.md`) |
+| Video streaming technologies (GStreamer) | GStreamer confined to one module: `Pipeline` behind a pimpl, the graph as data, the encoder a config value — `x264enc` here, a hardware encoder on the target |
+| A custom embedded Linux distribution | the aarch64 cross build against a Debian sysroot and a PetaLinux/Yocto SDK in Docker; the whole test suite re-run under QEMU |
+| Embedded architectures — cross-compilation, debugging, performance | CMake presets + aarch64 toolchain file, ccache, sanitizer presets, and the measured budgets of `docs/NUMBERS.md` |
+| Linux fundamentals — device drivers, device tree, bootloaders | `framework/hal` — typed registers over a UIO backend, exercised against a host fake with real side effects before any hardware exists |
+| Docker environments, Debian packaging | `docker/` — one Debian build image used identically on a laptop and in CI |
+| Add features, solve bugs, write tests | 67 GoogleTest cases, **all of them also on aarch64**; clean under ASan/UBSan and ThreadSanitizer |
+| Products that work reliably on customer platforms | telemetry observes and never influences — kill the broker mid-run and the pipeline loses zero frames; ordered shutdown, 686 ms on SIGTERM |
 
 ## The design decision that shapes everything
 
@@ -193,8 +192,8 @@ git diff --stat  v0-legacy..v1-modern       # 81 files, +7652/-447
 
 It starts from a deliberately legacy baseline and moves to the target state in
 a fixed order - build system, container, CI, tests, C++23, then components -
-because that order is the answer to "CMake / Docker / CI / C++20 must be built
-up". Reasoning in `docs/10_MIGRATION_PLAN.md`.
+because that order keeps every later commit reproducible and testable.
+Reasoning in `docs/10_MIGRATION_PLAN.md`.
 
 | | `v0-legacy` | now |
 |---|---|---|
