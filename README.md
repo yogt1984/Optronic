@@ -220,7 +220,8 @@ libstdc++ 13 gates it on `__cpp_concepts >= 202002L` and Clang reports
 1. `framework/health` — the INIT/OK/DEGRADED/FAULT machine of `docs/06_ERROR_MODEL_BIT.md`. The NUC already emits the events it would consume; today they go to the log and to MQTT, but nothing owns the state.
 2. The PetaLinux QEMU machine, which boots the actual target image instead of emulating only the instruction set. The tools image works and a full Yocto build ran through all 8051 tasks, but the SDK never came out packaged - the last attempt died on a transient fetch error. Until it does, the user-mode run is the honest half of the check.
 3. The t0/t1/t2 latency marks and the rolling window, which turn the interval numbers above into a real glass-to-glass budget - the detector makes this concrete, since inference is 110-170 ms against a 33 ms frame period.
-4. A `GstBufferPool` behind `FrameSource`, so a processor can write output frames without allocating in the frame path. Today the passthrough refs the input buffer instead.
-5. `framework/config` — the JSON store and schema, replacing the command-line flags the service currently takes.
+4. A second camera pipeline and the synchronization between them — timestamps taken at the source in one monotonic clock domain (PTP where a second device is involved), buffer PTS aligned across pipelines, and a pairing stage that matches frames by time rather than by arrival order. The t0 marks above are the prerequisite: nothing can be synchronized that was not timestamped.
+5. A `GstBufferPool` behind `FrameSource`, so a processor can write output frames without allocating in the frame path. Today the passthrough refs the input buffer instead.
+6. `framework/config` — the JSON store and schema, replacing the command-line flags the service currently takes.
 
 The order is deliberate: what everything else depends on comes first, and the demonstrable feature comes last.
