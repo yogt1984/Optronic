@@ -8,8 +8,6 @@ Plug in a USB camera, run two commands, and it detects objects live: boxes drawn
 
 The rest of what it does today: drives a register block through a hardware abstraction layer, runs the shutter sequence a thermal channel needs, and reports sensor state and events over MQTT. What it does not: there is no control link and no health state machine - both are specified in `docs/` and not implemented, and the `health` topic reports a fixed `OK`.
 
-It is written **for** a Xilinx Zynq UltraScale+ MPSoC on a System-on-Module - aarch64 under Linux, an AXI4-Lite register block in the programmable logic reached through UIO, software H.264 here and the VCU on the target - and it has **never run on one**. Everything here builds and runs on a PC; the aarch64 binaries are exercised under emulation. `docs/NUMBERS.md` says exactly what is measured and what is not.
-
 ## Quickstart
 
 Debian or Ubuntu, a USB camera, and nothing else installed:
