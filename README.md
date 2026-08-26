@@ -53,12 +53,6 @@ tools/cameras.sh --probe       # which /dev/video* actually delivers frames
 | CI | GitHub Actions: image, lint, three host presets, cross, QEMU |
 | Target class | written for Xilinx Zynq UltraScale+ MPSoC - A53 under Linux, AXI4-Lite over UIO, VCU or software encode. **No Zynq hardware was involved**: the register map is inferred, and the UIO path has only ever run against a host fake |
 
-## Why this repository exists
-
-This repository was prepared by **Yiğit Onat** for the interview with **Auterion** on 25 August 2026 for the position *Embedded Software Engineer (Camera & Driver Platform)*. It is stated openly: the purpose is to demonstrate an understanding of the software architecture, its constraints, and the tasks the position describes — before having seen the actual system.
-
-Everything about the real product is therefore **an inference from the role description and the public product line**, not knowledge of AuterionOS internals. Where a spec depends on such an assumption it says so, and the open questions are listed in `docs/00_SYSTEM_CONTEXT.md`.
-
 ## What runs today
 
 ```
